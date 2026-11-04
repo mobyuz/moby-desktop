@@ -1,6 +1,7 @@
 use tauri::Manager;
 
 mod api;
+mod store;
 
 /// Starts the app. Only one instance runs; a second launch focuses the first window.
 pub fn run() {
@@ -12,6 +13,12 @@ pub fn run() {
             }
         }))
         .manage(api::Api::new())
+        .setup(|app| {
+            // %APPDATA%\uz.moby.desktop. If the file cannot be opened the app still starts, without saving.
+            let dir = app.path().app_data_dir()?;
+            app.manage(store::Store::open(&dir));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             api::restore_session,
             api::sign_in,
@@ -25,6 +32,15 @@ pub fn run() {
             api::delete_account,
             api::export_account,
             api::agent_turn,
+            store::get_settings,
+            store::set_language,
+            store::set_retention,
+            store::list_conversations,
+            store::create_conversation,
+            store::load_messages,
+            store::append_message,
+            store::delete_conversation,
+            store::delete_all_history,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Moby Desktop");

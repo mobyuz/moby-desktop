@@ -3,6 +3,7 @@
 //! token in memory, and the webview only ever sees account data.
 
 use std::path::PathBuf;
+use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -12,6 +13,8 @@ use serde_json::{Value, json};
 use tauri::async_runtime::Mutex;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
+
+use crate::store::is_account_id;
 
 const DEFAULT_API_URL: &str = "http://127.0.0.1:8080";
 const TERMS_VERSION: &str = match option_env!("MOBY_TERMS_VERSION") {
@@ -34,11 +37,16 @@ pub struct Failure {
 }
 
 impl Failure {
-    fn new(code: &str, message: &str) -> Self {
+    pub(crate) fn new(code: &str, message: &str) -> Self {
         Self {
             code: code.into(),
             message: message.into(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn code(&self) -> &str {
+        &self.code
     }
 
     fn offline() -> Self {
@@ -131,6 +139,14 @@ fn is_terminal(event: &Value) -> bool {
     )
 }
 
+/// The account id in a profile, if it is safe to use as a key for local history.
+fn account_of(profile: &Value) -> Option<String> {
+    profile["id"]
+        .as_str()
+        .filter(|id| is_account_id(id))
+        .map(str::to_owned)
+}
+
 fn is_uuid(value: &str) -> bool {
     value.len() == 36 && value.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
@@ -157,6 +173,8 @@ pub struct Api {
     base: String,
     /// Also serialises refreshes: a reused refresh token revokes the whole session.
     access: Mutex<Option<String>>,
+    /// Id of the signed-in account. Local history is filed under it, and the webview cannot change it.
+    account: StdMutex<Option<String>>,
 }
 
 impl Api {
@@ -177,7 +195,27 @@ impl Api {
             http,
             base,
             access: Mutex::new(None),
+            account: StdMutex::new(None),
         }
+    }
+
+    fn set_account(&self, account: Option<String>) {
+        *self.account.lock().unwrap_or_else(|e| e.into_inner()) = account;
+    }
+
+    /// Remembers who is signed in, from the profile the server returned.
+    fn remember(&self, profile: &Value) -> Result<(), Failure> {
+        let id = account_of(profile).ok_or_else(Failure::unexpected)?;
+        self.set_account(Some(id));
+        Ok(())
+    }
+
+    pub(crate) fn account_id(&self) -> Result<String, Failure> {
+        self.account
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .ok_or_else(Failure::signed_out)
     }
 
     fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
@@ -215,6 +253,7 @@ impl Api {
                 Ok(token)
             }
             StatusCode::UNAUTHORIZED => {
+                self.set_account(None);
                 vault_clear(REFRESH_TOKEN)?;
                 Err(Failure::signed_out())
             }
@@ -256,6 +295,7 @@ impl Api {
     }
 
     async fn forget_session(&self) -> Result<(), Failure> {
+        self.set_account(None);
         *self.access.lock().await = None;
         vault_clear(REFRESH_TOKEN)
     }
@@ -280,7 +320,11 @@ pub async fn restore_session(api: State<'_, Api>) -> Result<Option<Value>, Failu
         return Ok(None);
     }
     match api.send(Method::GET, "/v1/me", None).await {
-        Ok(response) => read_json(response).await.map(Some),
+        Ok(response) => {
+            let profile = read_json(response).await?;
+            api.remember(&profile)?;
+            Ok(Some(profile))
+        }
         Err(failure) if failure.code == "signed_out" => Ok(None),
         Err(failure) => Err(failure),
     }
@@ -305,7 +349,9 @@ pub async fn sign_in(
     let mut access = api.access.lock().await;
     api.adopt(&mut access, tokens)?;
     drop(access);
-    read_json(api.send(Method::GET, "/v1/me", None).await?).await
+    let profile = read_json(api.send(Method::GET, "/v1/me", None).await?).await?;
+    api.remember(&profile)?;
+    Ok(profile)
 }
 
 #[tauri::command]
@@ -526,6 +572,15 @@ mod tests {
         assert!(is_terminal(&json!({ "event": "tool_call" })));
         assert!(is_terminal(&json!({ "event": "error" })));
         assert!(!is_terminal(&json!({ "event": "speech_delta" })));
+    }
+
+    #[test]
+    fn files_history_only_under_a_plain_account_id() {
+        let id = "7f3a90c2-1111-4222-8333-444455556666";
+        assert_eq!(account_of(&json!({ "id": id })).as_deref(), Some(id));
+        assert_eq!(account_of(&json!({ "email": "a@b.c" })), None);
+        assert_eq!(account_of(&json!({ "id": "a/../b" })), None);
+        assert_eq!(account_of(&json!({ "id": 7 })), None);
     }
 
     #[test]

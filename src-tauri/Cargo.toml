@@ -18,10 +18,13 @@ tauri-build = { version = "2.7.4", features = [] }
 futures-util = { version = "0.3.34", default-features = false }
 keyring = "4.2.0"
 reqwest = { version = "0.13.5", default-features = false, features = ["native-tls", "json", "stream"] }
+# Pinned exactly: the bundled SQLite is part of the local-data trust base (see docs/adr/0003-local-store.md).
+rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tauri = { version = "2.12.5", features = [] }
 tauri-plugin-single-instance = "2"
+uuid = { version = "1.29.0", default-features = false, features = ["v4"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
