@@ -77,7 +77,7 @@ export function Settings() {
           <h2>Memory and privacy</h2>
           <p>
             Moby saves your conversations on this computer only, so you can pick them up after a restart. The Moby server does not keep them. They sit in your Windows user profile and are protected by your
-            Windows account, not by a separate password.
+            Windows account, not by a separate password. They never roam with a Windows profile.
           </p>
           <label>
             Keep conversations for
@@ -101,12 +101,15 @@ export function Settings() {
           {!confirming ? (
             <div className="row">
               <button className="danger" type="button" onClick={() => setConfirming(true)}>
-                Delete all history
+                Delete all history for this Windows user
               </button>
             </div>
           ) : (
             <div className="delete-form">
-              <p>This deletes every saved conversation on this computer, for every account. It can't be undone.</p>
+              <p>
+                This deletes every saved conversation and every activity entry on this computer, for every account that has used Moby under this Windows user, not just the one signed in now. Project folders, programs and
+                reminders stay. It can't be undone.
+              </p>
               <div className="row">
                 <button
                   className="danger"
@@ -138,12 +141,7 @@ export function Settings() {
 
         <section>
           <h2>Activity log</h2>
-          <p className="muted">Once Moby can do things on your computer, it will list what it did here, without the contents. Nothing is recorded yet.</p>
-          <div className="row">
-            <button className="secondary" type="button" disabled>
-              Clear activity log
-            </button>
-          </div>
+          <p className="muted">What Moby did on your computer is listed under Activity (the pulse icon in the chat), where you can also clear it.</p>
         </section>
       </div>
     </main>

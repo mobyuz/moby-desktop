@@ -1,5 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { AgentEvent, ChatMessage, ConversationSummary, Installation, Language, Profile, Settings, TurnMessage, UsageInfo } from "./types";
+import type { ActivityEntry, AgentEvent, ChatMessage, ConversationSummary, Decision, Installation, Language, Profile, Program, Project, Registry, Reminder, Settings, ToolName, TurnMessage, UsageInfo } from "./types";
 
 /** Every command runs in src-tauri/src (api.rs and store.rs). Tokens and the history file never reach this side. */
 
@@ -30,9 +30,26 @@ export const api = {
   agentTurn: (messages: TurnMessage[], language: Language, onEvent: (event: AgentEvent) => void) => {
     const channel = new Channel<AgentEvent>();
     channel.onmessage = onEvent;
-    const request = { messages, available_tools: [], resources: [], language, script: language === "uz" ? "latn" : null };
-    return invoke<void>("agent_turn", { request, onEvent: channel });
+    // Only the conversation text and the language go to Rust. It decides which tools and resources exist.
+    return invoke<void>("agent_turn", { turn: { messages, language }, onEvent: channel });
   },
+  /** Answers a dialog that Rust opened. The id comes from an approval_required event. */
+  answerApproval: (approvalId: string, decision: Decision) => invoke<void>("answer_approval", { approvalId, decision }),
+  cancelTurn: () => invoke<void>("cancel_turn"),
+
+  // Tools and projects. Folders and programs are picked in a native dialog that Rust opens.
+  listRegistry: () => invoke<Registry>("list_registry"),
+  addProject: () => invoke<Project | null>("add_project"),
+  addApp: () => invoke<Program | null>("add_app"),
+  removeProject: (id: string) => invoke<void>("remove_project", { id }),
+  removeApp: (id: string) => invoke<void>("remove_app", { id }),
+  grantRead: (projectId: string, tool: ToolName, sessionOnly: boolean) => invoke<void>("grant_read", { projectId, tool, sessionOnly }),
+  revokeGrant: (grantId: string) => invoke<void>("revoke_grant", { grantId }),
+  revokeSessionGrant: (tool: ToolName, key: string) => invoke<void>("revoke_session_grant", { tool, key }),
+  listReminders: () => invoke<Reminder[]>("list_reminders"),
+  deleteReminder: (id: string) => invoke<void>("delete_reminder", { id }),
+  listActivity: () => invoke<ActivityEntry[]>("list_activity"),
+  clearActivity: () => invoke<number>("clear_activity"),
 
   // Local memory. The account is the one Rust signed in, so none is passed here.
   getSettings: () => invoke<Settings>("get_settings"),

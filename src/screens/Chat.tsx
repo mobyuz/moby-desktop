@@ -48,6 +48,11 @@ export function Chat() {
             </p>
           ))}
           {app.live !== null && <p className="bubble moby">{app.live}</p>}
+          {app.notes.map((note, index) => (
+            <p key={index} className="tool-note">
+              {note}
+            </p>
+          ))}
           {waiting && (
             <div className="bubble moby typing">
               <span className="sr">Moby is thinking</span>
@@ -80,9 +85,15 @@ export function Chat() {
         }}
       >
         <textarea ref={inputRef} rows={1} aria-label="Message to Moby" placeholder="Message Moby" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={onKeyDown} />
-        <button className="send" type="submit" aria-label="Send" title="Send" disabled={app.sending || tooLong || text.trim() === ""}>
-          <Icon name="send" />
-        </button>
+        {app.sending ? (
+          <button className="secondary" type="button" onClick={app.stop}>
+            Stop
+          </button>
+        ) : (
+          <button className="send" type="submit" aria-label="Send" title="Send" disabled={tooLong || text.trim() === ""}>
+            <Icon name="send" />
+          </button>
+        )}
       </form>
     </main>
   );

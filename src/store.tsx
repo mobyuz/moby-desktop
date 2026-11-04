@@ -3,7 +3,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { api, asFailure, type ApiFailure } from "./api";
 import { buildTurn, exceedsLimit, titleFrom } from "./history";
 import { clearSavedLanguage, loadSavedLanguage, saveLanguageFallback } from "./prefs";
-import type { AgentEvent, ChatMessage, ConversationSummary, Installation, Language, Profile, UsageInfo } from "./types";
+import { approvalFrom, toolNote } from "./tools";
+import type { AgentEvent, Approval, ChatMessage, ConversationSummary, Decision, Installation, Language, Profile, UsageInfo } from "./types";
 
 export type Status = "starting" | "offline" | "signedOut" | "signedIn";
 
@@ -20,6 +21,10 @@ export interface AppState {
   sending: boolean;
   chatError: string | null;
   expression: Expression;
+  /** A dialog from Rust waiting for the person. Only a dialog Rust opened can be answered. */
+  approval: Approval | null;
+  /** What tools did during the current turn, in the app's own words. */
+  notes: string[];
   language: Language;
   /** null keeps history until it is deleted. */
   retentionDays: number | null;
@@ -31,6 +36,9 @@ export interface AppState {
   signIn(email: string, password: string): Promise<void>;
   signOut(): Promise<void>;
   send(text: string): void;
+  answerApproval(decision: Decision): Promise<void>;
+  /** Stops the running turn, including a pending dialog. */
+  stop(): void;
   retryTurn(): void;
   saveName(name: string): Promise<void>;
   revokeInstallation(id: string): Promise<void>;
@@ -66,6 +74,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [sending, setSending] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
   const [expression, setExpression] = useState<Expression>("idle");
+  const [approval, setApproval] = useState<Approval | null>(null);
+  const [notes, setNotes] = useState<string[]>([]);
   const [language, setLanguageState] = useState<Language>(() => loadSavedLanguage() ?? "uz");
   const [retentionDays, setRetentionDays] = useState<number | null>(30);
   const [storeWarning, setStoreWarning] = useState<string | null>(null);
@@ -96,6 +106,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     cache.current.clear();
     unsaved.current.clear();
     setConversations([]);
+    setApproval(null);
+    setNotes([]);
     activate(null, []);
   }, [activate]);
 
@@ -250,6 +262,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setSending(true);
       setChatError(null);
       setLive(null);
+      setApproval(null);
+      setNotes([]);
       window.clearTimeout(settle.current);
       setExpression("thinking");
       const reply = (text: string) => addMessage(conversationId, { id: crypto.randomUUID(), role: "moby", text });
@@ -262,10 +276,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setLive(null);
           reply(event.display_text ?? event.speech_text);
           settleFace(isExpression(event.expression_hint) ? event.expression_hint : "happy");
-        } else if (event.event === "tool_call") {
+        } else if (event.event === "reset_speech") {
           setLive(null);
-          reply("I can't do that from this app yet.");
-          settleFace("confused");
+        } else if (event.event === "approval_required") {
+          // Attentive while the person decides. The face goes back to thinking when the dialog closes.
+          setLive(null);
+          setApproval(approvalFrom(event));
+          setExpression("listening");
+        } else if (event.event === "approval_closed") {
+          setApproval((current) => (current?.id === event.approval_id ? null : current));
+          setExpression("thinking");
+        } else if (event.event === "tool_result") {
+          setNotes((list) => [...list, toolNote(event)]);
         } else {
           failTurn(event.error);
         }
@@ -276,7 +298,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       guard(() => api.agentTurn(turn, language, onEvent))
         .then(() => refreshAccount().catch(() => undefined))
         .catch((failure: ApiFailure) => failTurn(failure))
-        .finally(() => setSending(false));
+        .finally(() => {
+          setSending(false);
+          setApproval(null);
+        });
     },
     [addMessage, failTurn, guard, language, refreshAccount, settleFace],
   );
@@ -292,6 +317,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
       sending,
       chatError,
       expression,
+      approval,
+      notes,
+      answerApproval: async (decision) => {
+        if (!approval) return;
+        setApproval(null);
+        // A stale answer (already expired or canceled) is refused by Rust, which is fine.
+        await api.answerApproval(approval.id, decision).catch(() => undefined);
+      },
+      stop: () => {
+        setApproval(null);
+        void api.cancelTurn().catch(() => undefined);
+      },
       retryStart: start,
       signIn: async (email, password) => {
         try {
@@ -385,7 +422,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setInstallations(await guard(() => api.listInstallations()));
       },
       deleteAccount: async (password) => {
-        await guard(() => api.deleteAccount(password));
+        try {
+          await guard(() => api.deleteAccount(password));
+        } catch (error) {
+          const failure = asFailure(error);
+          // The account is gone on the server, so the person is signed out either way.
+          if (failure.code !== "history_not_deleted") throw failure;
+          setStoreWarning(failure.message);
+        }
         leave();
       },
     }),
@@ -393,6 +437,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       activate,
       activeId,
       addMessage,
+      approval,
+      notes,
       chatError,
       conversations,
       enter,

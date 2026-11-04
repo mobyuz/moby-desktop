@@ -2,14 +2,17 @@ import { useEffect, useState, type ReactNode } from "react";
 import { EXPRESSION_META } from "./face/expressions";
 import { MobyFace } from "./face/MobyFace";
 import { Icon } from "./icons";
+import { ApprovalDialog } from "./components/ApprovalDialog";
 import { Account } from "./screens/Account";
+import { Activity } from "./screens/Activity";
 import { Auth } from "./screens/Auth";
 import { Chat } from "./screens/Chat";
 import { Conversations } from "./screens/Conversations";
 import { Settings } from "./screens/Settings";
+import { Tools } from "./screens/Tools";
 import { AppProvider, useApp } from "./store";
 
-type View = "chat" | "conversations" | "account" | "settings";
+type View = "chat" | "conversations" | "tools" | "activity" | "account" | "settings";
 
 function Shell() {
   const app = useApp();
@@ -48,6 +51,8 @@ function Shell() {
   if (view !== "chat" && (view === "settings" || signedIn)) {
     const page: Record<Exclude<View, "chat">, ReactNode> = {
       conversations: <Conversations onDone={() => setView("chat")} />,
+      tools: <Tools />,
+      activity: <Activity />,
       account: <Account />,
       settings: <Settings />,
     };
@@ -65,6 +70,7 @@ function Shell() {
           </p>
         )}
         {page[view]}
+        <ApprovalDialog />
       </div>
     );
   }
@@ -102,7 +108,7 @@ function Shell() {
         <div className="bar-title">
           <strong>Moby</strong>
           <span className="muted" role="status">
-            {EXPRESSION_META[app.expression].status}
+            {app.approval ? "Waiting for you" : EXPRESSION_META[app.expression].status}
           </span>
         </div>
         <div className="bar-actions">
@@ -111,6 +117,12 @@ function Shell() {
           </button>
           <button className="icon-button" type="button" title="Conversations" aria-label="Conversations" onClick={() => setView("conversations")}>
             <Icon name="chats" />
+          </button>
+          <button className="icon-button" type="button" title="Tools and projects" aria-label="Tools and projects" onClick={() => setView("tools")}>
+            <Icon name="tools" />
+          </button>
+          <button className="icon-button" type="button" title="Activity" aria-label="Activity" onClick={() => setView("activity")}>
+            <Icon name="activity" />
           </button>
           <button className="icon-button" type="button" title="Settings" aria-label="Settings" onClick={() => setView("settings")}>
             <Icon name="settings" />
@@ -126,6 +138,7 @@ function Shell() {
         </p>
       )}
       <Chat />
+      <ApprovalDialog />
     </div>
   );
 }
