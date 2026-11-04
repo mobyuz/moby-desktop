@@ -50,6 +50,7 @@ jobs:
         run: |
           cargo fmt --all -- --check
           cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
       - name: Build the Windows app
         working-directory: moby-desktop
         run: npm run tauri -- build --bundles nsis
