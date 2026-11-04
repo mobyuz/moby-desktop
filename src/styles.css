@@ -1,35 +1,78 @@
-:root {
-  color-scheme: light dark;
-  --bg: #f3f8f9;
-  --panel: #ffffff;
-  --line: #d8e5e8;
-  --text: #101f25;
-  --subtle: #49626b;
-  --accent: #006c79;
-  --brand: #00a0af;
-  --body: #dfeef0;
-  --body-edge: #b7d3d8;
-  --screen: #081c24;
-  --glow: #5fe3ef;
-  --red: #ff4d4d;
-  --green: #35d07f;
-  --amber: #ffb84d;
-  --on-accent: #ffffff;
-  font-family: "Segoe UI", system-ui, sans-serif;
+/* Design tokens and the Moby face. The chrome is black and white; colour belongs to Moby's mood and to status. */
+
+@property --mood {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #ffffff;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0b1418;
-    --panel: #111f25;
-    --line: #20343c;
-    --text: #e9f3f5;
-    --subtle: #9db6bd;
-    --accent: #5fe3ef;
-    --body: #1b2f36;
-    --body-edge: #2c4851;
-    --on-accent: #06222a;
-  }
+:root {
+  color-scheme: light dark;
+  --canvas: light-dark(#fafafa, #000000);
+  --panel: light-dark(#ffffff, #0b0b0b);
+  --raised: light-dark(#f4f4f5, #1c1c1f);
+  --line: light-dark(#e4e4e7, #2b2b2b);
+  --line-strong: light-dark(#8a8a93, #6e6e77);
+  --text: light-dark(#18181b, #fafafa);
+  --subtle: light-dark(#52525b, #a6a6a6);
+  --accent: light-dark(#18181b, #fafafa);
+  --accent-hover: light-dark(#3f3f46, #d4d4d8);
+  --on-accent: light-dark(#ffffff, #18181b);
+  --ok: light-dark(#047857, #34d399);
+  --danger: light-dark(#be123c, #fb7185);
+  font-family: "Onest Variable", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+/* Bright enough for the OLED screen, which stays black in both themes. */
+
+[data-expression] {
+  transition: --mood 0.5s ease;
+}
+
+[data-expression="idle"] {
+  --mood: #ffffff;
+}
+
+[data-expression="listening"] {
+  --mood: #fb7185;
+}
+
+[data-expression="thinking"] {
+  --mood: #c4b5fd;
+}
+
+[data-expression="speaking"] {
+  --mood: #7dd3fc;
+}
+
+[data-expression="happy"] {
+  --mood: #6ee7b7;
+}
+
+[data-expression="confused"] {
+  --mood: #fcd34d;
+}
+
+[data-expression="error"] {
+  --mood: #f87171;
+}
+
+[data-expression="muted"] {
+  --mood: #a1a1aa;
+}
+
+[data-expression="disconnected"] {
+  --mood: #71717a;
 }
 
 * {
@@ -38,83 +81,44 @@
 
 body {
   margin: 0;
-  background: var(--bg);
   color: var(--text);
+  background: var(--canvas);
+  -webkit-font-smoothing: antialiased;
 }
 
-.home {
-  display: grid;
-  justify-items: center;
-  gap: 16px;
-  max-width: 560px;
-  margin: 0 auto;
-  padding: 24px 16px 32px;
-}
-
-header {
-  text-align: center;
-}
-
-h1 {
+h1,
+h2,
+p {
   margin: 0;
-  font-size: 1.6rem;
-  letter-spacing: 0.04em;
 }
 
-h2 {
-  margin: 0 0 8px;
-  font-size: 0.95rem;
-  color: var(--subtle);
-}
-
-.build,
-.hint {
-  margin: 4px 0 0;
-  color: var(--subtle);
-  font-size: 0.8rem;
-}
-
-/* Robot */
+/* Moby's screen stays black in both themes, like the OLED on the robot */
 
 .robot {
-  margin: 0;
-  width: min(100%, 360px);
-}
-
-.robot svg {
   display: block;
-  width: 100%;
-  height: auto;
+  flex: none;
   overflow: visible;
 }
 
-.robot-shadow {
-  fill: rgb(0 0 0 / 0.18);
-}
-
-.robot-stand {
-  fill: var(--body-edge);
-}
-
-.robot-body {
-  fill: var(--body);
-  stroke: var(--body-edge);
-  stroke-width: 4;
-}
-
 .robot-screen {
-  fill: var(--screen);
+  fill: #000000;
+  stroke: var(--line);
+  stroke-width: 2;
+}
+
+.robot .face {
+  filter: drop-shadow(0 0 5px var(--mood));
 }
 
 .eye,
 .dot,
 .bar {
-  fill: var(--glow);
+  fill: var(--mood);
 }
 
 .eye.outline {
   fill: none;
-  stroke: var(--glow);
+  stroke: var(--mood);
   stroke-width: 4;
   stroke-dasharray: 6 8;
 }
@@ -123,7 +127,7 @@ h2 {
 .slash,
 .ring {
   fill: none;
-  stroke: var(--glow);
+  stroke: var(--mood);
   stroke-width: 7;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -134,7 +138,7 @@ h2 {
 }
 
 .slash {
-  stroke: var(--red);
+  stroke: #f43f5e;
   stroke-width: 5;
 }
 
@@ -144,36 +148,15 @@ h2 {
 }
 
 .mark {
-  fill: var(--amber);
-  font: 700 34px "Segoe UI", sans-serif;
+  fill: var(--mood);
+  font-size: 34px;
+  font-weight: 700;
 }
 
 .eye.tilted {
   transform-box: fill-box;
   transform-origin: center;
   transform: rotate(-14deg);
-}
-
-.led {
-  stroke: rgb(0 0 0 / 0.25);
-  stroke-width: 2;
-}
-
-.led-green {
-  fill: var(--green);
-}
-
-.led-red {
-  fill: var(--red);
-}
-
-.led.off {
-  fill: #6c7f86;
-  opacity: 0.45;
-}
-
-.led.pulse {
-  animation: led-pulse 0.9s ease-in-out infinite;
 }
 
 /* Animations: one distinct motion per expression */
@@ -410,102 +393,11 @@ h2 {
   }
 }
 
-@keyframes led-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.25;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .robot *,
-  .robot *::before,
-  .robot *::after {
+  *,
+  *::before,
+  *::after {
     animation: none !important;
+    transition: none !important;
   }
-}
-
-/* Status and controls */
-
-.status {
-  text-align: center;
-}
-
-.state {
-  margin: 0;
-  font-size: 1.25rem;
-  font-weight: 600;
-}
-
-.detail {
-  margin: 2px 0 8px;
-  color: var(--subtle);
-}
-
-.indicators {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  font-size: 0.8rem;
-}
-
-.indicators li {
-  padding: 2px 10px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  color: var(--subtle);
-}
-
-.indicators li[data-on="true"] {
-  color: var(--text);
-  border-color: var(--brand);
-}
-
-.preview {
-  width: 100%;
-  padding: 16px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-}
-
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.chips button {
-  padding: 6px 14px;
-  font: inherit;
-  color: var(--text);
-  background: transparent;
-  border: 1px solid var(--accent);
-  border-radius: 999px;
-  cursor: pointer;
-}
-
-.chips button[data-allowed="false"] {
-  border-style: dashed;
-  border-color: var(--line);
-  color: var(--subtle);
-}
-
-.chips button[aria-pressed="true"] {
-  color: var(--on-accent);
-  background: var(--accent);
-  border-style: solid;
-  border-color: var(--accent);
-}
-
-.chips button:focus-visible {
-  outline: 3px solid var(--brand);
-  outline-offset: 2px;
 }

@@ -150,21 +150,15 @@ function Features({ expression }: { expression: Expression }): ReactNode {
   }
 }
 
+/** Moby's OLED screen, the same face the robot shows. */
 export function MobyFace({ expression }: { expression: Expression }) {
   const meta = EXPRESSION_META[expression];
   return (
-    <figure className="robot" data-expression={expression} data-animation={meta.animation}>
-      <svg viewBox="0 0 320 300" role="img" aria-label={`Moby is ${meta.label.toLowerCase()}`}>
-        <ellipse className="robot-shadow" cx={160} cy={282} rx={110} ry={12} />
-        <rect className="robot-stand" x={140} y={232} width={40} height={40} rx={8} />
-        <rect className="robot-body" x={24} y={20} width={272} height={224} rx={44} />
-        <rect className="robot-screen" x={32} y={34} width={256} height={128} rx={30} />
-        <g className="face" transform="translate(32 34)">
-          <Features expression={expression} />
-        </g>
-        <circle className={`led led-green ${meta.greenLed}`} cx={96} cy={206} r={8} />
-        <circle className={`led led-red ${meta.redLed}`} cx={224} cy={206} r={8} />
-      </svg>
-    </figure>
+    <svg className="robot" data-expression={expression} data-animation={meta.animation} viewBox="0 0 256 128" role="img" aria-label={`Moby is ${meta.label.toLowerCase()}`}>
+      <rect className="robot-screen" width={256} height={128} rx={36} />
+      <g className="face">
+        <Features expression={expression} />
+      </g>
+    </svg>
   );
 }

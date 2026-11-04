@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "No webview commands are exposed yet. Add the narrowest permission each feature needs.",
+  "description": "Plugins and core APIs stay closed. The webview only reaches the commands in src/api.rs, and those keep tokens on the Rust side.",
   "windows": ["main"],
   "permissions": []
 }

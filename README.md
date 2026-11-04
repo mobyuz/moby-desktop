@@ -6,9 +6,9 @@
 
 **The Windows companion app for Moby, a voice-enabled desk robot.**
 
-Talk to your robot, approve what it may do on your computer, and keep your history on your own machine.
+Chat with Moby from your computer and manage your account.
 
-[![License: GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-006c79?style=flat-square)](LICENSE)
+[![License: GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-18181b?style=flat-square)](LICENSE)
 [![Platform: Windows 11](https://img.shields.io/badge/platform-Windows%2011-0078d4?style=flat-square)](#building)
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square)](https://tauri.app)
 [![React 19](https://img.shields.io/badge/React-19-61dafb?style=flat-square)](https://react.dev)
@@ -23,91 +23,82 @@ Talk to your robot, approve what it may do on your computer, and keep your histo
 
 ## Overview
 
-Moby is a small ESP32-S3 robot with animated OLED eyes, a push-to-talk button, and a hardware mute switch. **Moby Desktop** is the app that sits between the robot and the rest of your digital life. It is designed to:
+Moby is a small ESP32-S3 robot with animated OLED eyes, a push-to-talk button, and a hardware mute switch. **Moby Desktop** is the app that connects you to it. Today it does what [moby-api](https://github.com/mobyuz/moby-api) already supports:
 
-- **Talk to the robot over USB.** Audio and status travel over a versioned, framed protocol.
-- **Talk to the Moby backend.** Sign-in, consent, usage limits, speech, and the AI model.
-- **Run only what you approve.** The model can ask for a tool such as `git_status`. Nothing runs until you say yes, and tools you turn off are refused automatically.
-- **Keep your history local.** Conversation history stays on your computer. The server does not store it.
-- **Work without a robot.** A virtual Moby with nine animated expressions is built in, so you can try the app today. See [Status](#status) for what is already real.
+- **Sign in.** Create an account, confirm your email, and reset your password. You stay signed in between launches.
+- **Chat with Moby.** Replies stream in as they are written, and the face follows along.
+- **Manage your account.** Change your name, check today's usage, sign other computers out, download your data, or delete your account.
 
 ## Screenshots
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/screenshots/home-approval.jpg" alt="Home screen: Moby is thinking and asks for approval to read the git status of a project"></td>
-    <td width="50%"><img src="docs/screenshots/sign-in.jpg" alt="Sign-in screen with the virtual Moby"></td>
+    <td width="50%"><img src="docs/screenshots/chat.jpg" alt="Chat screen in the dark theme: Moby's face above a short conversation"></td>
+    <td width="50%"><img src="docs/screenshots/chat-light.jpg" alt="The same chat screen in the light theme"></td>
   </tr>
   <tr>
-    <td align="center"><sub><b>Approve before it runs.</b> Moby asks, you decide.</sub></td>
-    <td align="center"><sub><b>Sign in</b> or continue without an account.</sub></td>
+    <td align="center"><sub><b>Chat</b> in the dark theme.</sub></td>
+    <td align="center"><sub><b>Light theme</b>, or follow Windows.</sub></td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/screenshots/account-usage.jpg" alt="Account screen with profile, daily usage meters, and signed-in computers"></td>
-    <td width="50%"><img src="docs/screenshots/devices.jpg" alt="Devices screen with a simulated robot, heartbeat, and mute switch"></td>
+    <td width="50%"><img src="docs/screenshots/sign-in.jpg" alt="Sign-in screen with Moby's face, email and password fields"></td>
+    <td width="50%"><img src="docs/screenshots/account.jpg" alt="Account page with profile, usage, preferences, and signed-in computers"></td>
   </tr>
   <tr>
-    <td align="center"><sub><b>Usage and account</b> at a glance.</sub></td>
-    <td align="center"><sub><b>Simulated robots</b> speak the real USB protocol.</sub></td>
+    <td align="center"><sub><b>Sign in</b> once and stay signed in.</sub></td>
+    <td align="center"><sub><b>Account</b> and today's usage.</sub></td>
   </tr>
 </table>
 
-> The screenshots show demo mode. The data, replies, and tool results are staged, and no command is run.
+> The chat reply comes from moby-api's test provider. The account is a test account.
 
 ## Status
 
-Early development. The app runs in **demo mode**: the sign-in, chat, usage, consent, and device screens use an in-memory stand-in for the backend, and the robot is simulated. **No server is contacted and nothing leaves your computer.**
+Early development. Features appear in the app once they work end to end.
 
 | Area | State |
 | --- | :---: |
 | App shell, strict CSP, single-instance startup | ✅ |
 | Virtual Moby face with nine animated expressions | ✅ |
-| Sign-in, profile, usage, installations, consent, tools, approvals, devices, settings, diagnostics screens (demo data) | ✅ |
-| Real backend client and token storage in the Windows Credential Manager | 🔜 |
+| Email sign-in, registration, password reset | ✅ |
+| Tokens in the Windows Credential Manager | ✅ |
+| Text chat with `/v1/agent/turn` | ✅ |
+| Profile, usage, signed-in computers, data export, account deletion | ✅ |
+| Google sign-in, voice (`/v1/voice`) | 🔜 |
 | USB robot link and audio streaming | 🔜 |
-| Safe local tools: `git_status`, `open_app`, `open_project`, `search_files`, `create_reminder` | 🔜 |
+| Safe local tools with approvals: `git_status`, `open_app`, `open_project`, `search_files`, `create_reminder` | 🔜 |
 | Local history database, signed updates, installer distribution | 🔜 |
-
-### Try the demo
-
-1. Start the app and press **Fill in the demo account**, then **Sign in**. You can also choose **Continue without an account**.
-2. On **Home**, press **What is the git status?**. Moby thinks, then asks for approval.
-3. Press **Approve**. Moby answers, and the face and the usage meters on **Account & usage** change.
-4. On **Tools & projects**, turn **Search files** off and ask for a search. Moby refuses without asking.
-5. On **Devices**, flip the mic switch or simulate an unplug and watch the face react.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    Robot["Moby robot<br/>ESP32-S3"] <-->|"USB<br/>framed protocol"| App
     subgraph PC["Your computer"]
-        App["Moby Desktop<br/>Tauri + React"]
-        Tools["Approved local tools"]
-        Store[("Local history")]
-        App --> Tools
-        App --> Store
+        UI["Interface<br/>React"] <-->|"IPC"| Client["API client<br/>Rust"]
+        Client <--> Vault[("Windows<br/>Credential Manager")]
     end
-    App <-->|"HTTPS"| API["Moby API<br/>accounts, consent, AI, voice"]
+    Client <-->|"HTTPS"| API["Moby API<br/>accounts, AI"]
 ```
 
 | Layer | Technology | Role |
 | --- | --- | --- |
-| Shell | Tauri 2, Rust | Window, security policy, native integrations |
+| Shell | Tauri 2, Rust | Window, security policy, API client, token storage |
 | UI | React 19, TypeScript, Vite | Screens and the animated face |
-| Contract | `@mobyuz/moby-protocol` | Shared expressions and state transitions |
+| Contract | `@mobyuz/moby-protocol` | Shared expressions |
 
 The face is plain SVG driven by `data-expression` and CSS, so every expression stays distinct even with reduced motion.
+
+The interface is black and white, in light and dark themes that you can pick under **Settings**. Colour is reserved for Moby's mood and for status. The tokens live at the top of `src/styles.css`.
 
 ## Repository layout
 
 | Path | Purpose |
 | --- | --- |
 | `src/face/` | The virtual face and per-expression metadata |
-| `src/screens/` | One file per screen |
-| `src/store.tsx` | App state and the scripted demo agent |
-| `src/demo.ts` | In-memory stand-in for the backend, shaped like the Moby API |
-| `src-tauri/` | Rust shell, window, CSP, and capabilities |
+| `src/screens/` | Sign-in, chat, and account |
+| `src/store.tsx` | App state and the chat turn |
+| `src/api.ts` | Typed calls to the Rust commands |
+| `src-tauri/` | Rust shell, API client, token storage, window, and CSP |
 | `tests/` | Unit tests |
 | `docs/adr/` | Architecture decision records |
 
@@ -136,6 +127,8 @@ npm.cmd ci --ignore-scripts --no-audit --no-fund
 
 ### Run and check
 
+The app talks to `http://127.0.0.1:8080` by default, so start moby-api first (`docker compose up -d` in that repository). Set `MOBY_API_URL` to use another server. It must be HTTPS unless the server runs on this computer. `MOBY_TERMS_VERSION` and `MOBY_PRIVACY_POLICY_VERSION` set at build time must match the server, and default to its `dev-1`.
+
 ```powershell
 npm.cmd run tauri -- dev
 npm.cmd run lint
@@ -144,6 +137,7 @@ npm.cmd test
 Set-Location src-tauri
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
 ```
 
 ### Build the app
@@ -160,11 +154,11 @@ The binary is `src-tauri/target/release/moby-desktop.exe`, and the per-user inst
 
 ## Security
 
-- The webview has **no filesystem or shell access** and an empty capability set. Each feature will add only the narrowest permission it needs.
-- The production content security policy allows only the app's own files.
-- Secrets such as refresh tokens will live in the Windows Credential Manager, never in the web layer.
-- The model's suggestions are untrusted requests. Tools are allow-listed, scoped to registered projects, and need your approval.
-- The hardware mute switch always wins: when it is off, Moby cannot listen, whatever the app says.
+- The webview has **no filesystem or shell access** and an empty capability set. It can only call the commands in `src-tauri/src/api.rs`.
+- The production content security policy allows only the app's own files. All network traffic goes through Rust.
+- The refresh token lives in the Windows Credential Manager and the access token in Rust memory. Neither reaches the web layer.
+- The app sends tokens only over HTTPS, or to a server on this computer.
+- Conversations stay in memory while the app runs. The server does not store them.
 
 Please do not put real credentials in issues or pull requests.
 

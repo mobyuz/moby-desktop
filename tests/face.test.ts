@@ -33,13 +33,9 @@ describe("virtual Moby face", () => {
     }
   });
 
-  it("keeps the microphone LEDs consistent with mute and disconnect", () => {
-    expect(EXPRESSION_META.muted.greenLed).toBe("off");
-    expect(EXPRESSION_META.muted.redLed).toBe("off");
-    expect(EXPRESSION_META.disconnected.greenLed).toBe("off");
-    expect(EXPRESSION_META.listening.redLed).toBe("pulse");
+  it("gives every expression its own mood colour", () => {
     for (const expression of EXPRESSIONS) {
-      if (expression !== "listening") expect(EXPRESSION_META[expression].redLed).toBe("off");
+      expect(css).toContain(`[data-expression="${expression}"]`);
     }
   });
 });
