@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { MobyFace } from "../face/MobyFace";
+import { exceedsLimit, MAX_TEXT_BYTES } from "../history";
 import { Icon } from "../icons";
 import { useApp } from "../store";
 
@@ -10,6 +11,7 @@ export function Chat() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const empty = app.messages.length === 0;
   const waiting = app.sending && app.live === null;
+  const tooLong = exceedsLimit(text);
 
   useEffect(() => {
     const list = listRef.current;
@@ -19,7 +21,7 @@ export function Chat() {
   useEffect(() => inputRef.current?.focus(), []);
 
   const submit = () => {
-    if (app.sending || text.trim() === "") return;
+    if (app.sending || tooLong || text.trim() === "") return;
     app.send(text);
     setText("");
   };
@@ -65,6 +67,11 @@ export function Chat() {
         </div>
       )}
 
+      {tooLong && (
+        <p className="error composer-note" role="alert">
+          That message is too long. Keep it under {MAX_TEXT_BYTES / 1024} KB.
+        </p>
+      )}
       <form
         className="composer"
         onSubmit={(event) => {
@@ -73,7 +80,7 @@ export function Chat() {
         }}
       >
         <textarea ref={inputRef} rows={1} aria-label="Message to Moby" placeholder="Message Moby" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={onKeyDown} />
-        <button className="send" type="submit" aria-label="Send" title="Send" disabled={app.sending || text.trim() === ""}>
+        <button className="send" type="submit" aria-label="Send" title="Send" disabled={app.sending || tooLong || text.trim() === ""}>
           <Icon name="send" />
         </button>
       </form>

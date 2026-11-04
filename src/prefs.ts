@@ -2,7 +2,9 @@ import type { Language } from "./types";
 
 export type ThemeChoice = "system" | "light" | "dark";
 
+/** The theme is a per-viewer convenience and must apply before the first paint, so it stays in localStorage. */
 const THEME_KEY = "moby.theme";
+/** The reply language now lives in the Rust settings. This key only carries an older choice over, or covers a history file that won't open. */
 const LANGUAGE_KEY = "moby.language";
 
 export function parseTheme(value: string | null): ThemeChoice {
@@ -30,8 +32,22 @@ function write(key: string, value: string): void {
 }
 
 export const loadTheme = () => parseTheme(read(THEME_KEY));
-export const loadLanguage = () => parseLanguage(read(LANGUAGE_KEY));
-export const saveLanguage = (language: Language) => write(LANGUAGE_KEY, language);
+
+/** A language chosen before settings moved to Rust, or while they could not be saved. Null when there is none. */
+export function loadSavedLanguage(): Language | null {
+  const value = read(LANGUAGE_KEY);
+  return value === null ? null : parseLanguage(value);
+}
+
+export const saveLanguageFallback = (language: Language) => write(LANGUAGE_KEY, language);
+
+export function clearSavedLanguage(): void {
+  try {
+    localStorage.removeItem(LANGUAGE_KEY);
+  } catch {
+    // Nothing to clear.
+  }
+}
 
 /** The tokens use light-dark(), so the choice only has to pick the root color-scheme. */
 export function applyTheme(theme: ThemeChoice): void {

@@ -1,27 +1,11 @@
 import { useState, type FormEvent } from "react";
 import { api, asFailure } from "../api";
-import { loadLanguage, loadTheme, saveLanguage, saveTheme, type ThemeChoice } from "../prefs";
 import { useApp } from "../store";
-import type { Language } from "../types";
-
-const THEMES: { value: ThemeChoice; label: string }[] = [
-  { value: "system", label: "System" },
-  { value: "light", label: "Light" },
-  { value: "dark", label: "Dark" },
-];
-
-const LANGUAGES: { value: Language; label: string }[] = [
-  { value: "uz", label: "Uzbek" },
-  { value: "ru", label: "Russian" },
-  { value: "en", label: "English" },
-];
 
 export function Account() {
   const app = useApp();
   const [name, setName] = useState(app.profile?.display_name ?? "");
   const [saved, setSaved] = useState(false);
-  const [theme, setTheme] = useState(loadTheme);
-  const [language, setLanguage] = useState(loadLanguage);
   const [exportPath, setExportPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -49,8 +33,8 @@ export function Account() {
   if (!profile) return null;
 
   return (
-    <main className="account">
-      <div className="account-column">
+    <main className="page">
+      <div className="page-column">
         {error && (
           <p className="error" role="alert">
             {error}
@@ -92,45 +76,6 @@ export function Account() {
           ) : (
             <p className="muted">Not available right now.</p>
           )}
-        </section>
-
-        <section>
-          <h2>Preferences</h2>
-          <div className="field">
-            <span id="theme-label">Appearance</span>
-            <div className="segmented" role="group" aria-labelledby="theme-label">
-              {THEMES.map((item) => (
-                <button
-                  key={item.value}
-                  type="button"
-                  aria-pressed={theme === item.value}
-                  onClick={() => {
-                    setTheme(item.value);
-                    saveTheme(item.value);
-                  }}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <label>
-            Moby replies in
-            <select
-              value={language}
-              onChange={(e) => {
-                const next = e.target.value as Language;
-                setLanguage(next);
-                saveLanguage(next);
-              }}
-            >
-              {LANGUAGES.map((item) => (
-                <option key={item.value} value={item.value}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-          </label>
         </section>
 
         <section>

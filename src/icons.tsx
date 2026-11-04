@@ -3,6 +3,15 @@ import type { ReactNode } from "react";
 const PATHS = {
   back: <path d="M19 12H5M11 6l-6 6 6 6" />,
   send: <path d="M12 19V5M6 11l6-6 6 6" />,
+  plus: <path d="M12 5v14M5 12h14" />,
+  chats: <path d="M4 6h16M4 12h16M4 18h10" />,
+  settings: (
+    <>
+      <path d="M4 7h9M19 7h1M4 17h1M11 17h9" />
+      <circle cx="16" cy="7" r="2.2" />
+      <circle cx="8" cy="17" r="2.2" />
+    </>
+  ),
   eye: (
     <>
       <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" />
