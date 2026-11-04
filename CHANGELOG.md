@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Safe local tools: Moby can read a registered project's Git status (in process, without starting `git`), search its file names, create reminders with a Windows notification, and, after you confirm on screen, open a program or a project. The agent loop moved into Rust, so the interface can only approve or deny a dialog Rust opened.
+- **Tools and projects** and **Activity** pages, an approval dialog that starts on Deny, read permissions you can revoke, and a working activity log that stores decisions only.
+- Windows path checks before every use of a registered folder or program, and a test corpus with real junctions.
+- History now lives in `%LOCALAPPDATA%` (existing files move there once). Deleting your account deletes its local data too, and Delete all history says it covers every account on this Windows user.
+
 - Tauri 2 shell with a strict CSP, an empty capability set, and single-instance startup.
 - Virtual Moby face that draws and animates all nine protocol expressions.
 - Windows CI that checks the frontend and Rust code and builds a per-user NSIS installer.

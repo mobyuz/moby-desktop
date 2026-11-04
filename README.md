@@ -29,6 +29,7 @@ Moby is a small ESP32-S3 robot with animated OLED eyes, a push-to-talk button, a
 - **Chat with Moby.** Replies stream in as they are written, and the face follows along. Conversations are saved on your computer, so you can come back to them.
 - **Manage your account.** Change your name, check today's usage, sign other computers out, download your data, or delete your account.
 - **Control what is kept.** Choose how long history stays, or delete all of it, under **Settings**. Settings work before you sign in.
+- **Let Moby help on this computer, safely.** Add project folders and programs under **Tools and projects**. Moby can then read a project's Git status, search its file names, set reminders, and, after you confirm each time, open a program or a project. **Activity** lists what it did.
 
 ## Screenshots
 
@@ -67,8 +68,9 @@ Early development. Features appear in the app once they work end to end.
 | Profile, usage, signed-in computers, data export, account deletion | ✅ |
 | Google sign-in, voice (`/v1/voice`) | 🔜 |
 | USB robot link and audio streaming | 🔜 |
-| Safe local tools with approvals: `git_status`, `open_app`, `open_project`, `search_files`, `create_reminder` | 🔜 |
+| Safe local tools with approvals: `git_status`, `open_app`, `open_project`, `search_files`, `create_reminder` | ✅ |
 | Local history in SQLite, per account, with retention and delete-all | ✅ |
+| Registered folders and programs, read grants, approval dialog, activity log, reminders | ✅ |
 | Signed updates, installer distribution | 🔜 |
 
 ## Architecture
@@ -79,7 +81,10 @@ flowchart LR
         UI["Interface<br/>React"] <-->|"IPC"| Client["API client<br/>Rust"]
         Client <--> Vault[("Windows<br/>Credential Manager")]
         UI <-->|"IPC"| Store["Local store<br/>Rust"]
-        Store <--> DB[("SQLite<br/>history")]
+        Store <--> DB[("SQLite<br/>history, registry, audit")]
+        Client <--> Agent["Agent loop and tools<br/>Rust"]
+        Agent <--> Store
+        UI <-->|"approve or deny"| Agent
     end
     Client <-->|"HTTPS"| API["Moby API<br/>accounts, AI"]
 ```
@@ -99,12 +104,17 @@ The interface is black and white, in light and dark themes that you can pick und
 | Path | Purpose |
 | --- | --- |
 | `src/face/` | The virtual face and per-expression metadata |
-| `src/screens/` | Sign-in, chat, conversation list, settings, and account |
+| `src/screens/` | Sign-in, chat, conversation list, tools and projects, activity, settings, and account |
+| `src/components/` | The approval dialog |
 | `src/store.tsx` | App state and the chat turn |
 | `src/history.ts` | Limits for what each turn sends, and conversation titles |
 | `src/api.ts` | Typed calls to the Rust commands |
 | `src-tauri/` | Rust shell, API client, token storage, window, and CSP |
 | `src-tauri/src/store.rs` | The SQLite history and settings, and the commands that reach them |
+| `src-tauri/src/agent.rs` | The agent turn: request, stream, tool loop, approvals |
+| `src-tauri/src/tools/` | `git_status`, `search_files`, program launch, and the checks in front of them |
+| `src-tauri/src/paths.rs` | Windows path hardening |
+| `src-tauri/src/registry.rs`, `grants.rs`, `scheduler.rs` | Registered folders and programs, grants, activity log, reminders |
 | `src-tauri/migrations/` | Versioned SQL schema steps |
 | `tests/` | Unit tests |
 | `docs/adr/` | Architecture decision records |
@@ -165,8 +175,9 @@ The binary is `src-tauri/target/release/moby-desktop.exe`, and the per-user inst
 - The production content security policy allows only the app's own files. All network traffic goes through Rust.
 - The refresh token lives in the Windows Credential Manager and the access token in Rust memory. Neither reaches the web layer.
 - The app sends tokens only over HTTPS, or to a server on this computer.
-- Conversations are saved only on this computer, in a SQLite file in your Windows profile (`%APPDATA%\uz.moby.desktop\moby.db`). The server does not store them, and each account sees only its own. The file is protected by your Windows account and is not encrypted separately ([ADR 0003](docs/adr/0003-local-store.md)). Old conversations are removed after 30 days unless you change that, and **Settings** can delete everything at once.
+- Conversations are saved only on this computer, in a SQLite file in your local Windows profile (`%LOCALAPPDATA%\uz.moby.desktop\moby.db`, which does not roam). The server does not store them, and each account sees only its own. The file is protected by your Windows account and is not encrypted separately ([ADR 0003](docs/adr/0003-local-store.md)). Old conversations are removed after 30 days unless you change that, and **Settings** can delete everything at once, for every account on this Windows user. Deleting your account also deletes its data from this computer.
 - If the history file can't be opened, chat still works from memory and the app says nothing is being saved.
+- **Local tools** ([ADR 0005](docs/adr/0005-local-tools.md), [threat notes](docs/tool-threat-notes.md)): what the model asks for is a request, never permission. The agent loop runs in Rust; the webview can only approve or deny a dialog that Rust opened. The model supplies ids, never paths or commands: real paths come from the folders and programs you picked in a native dialog, and are checked again before every use (junctions, UNC and device paths, alternate streams, short names and swapped files are refused). Opening a program or a project always asks you, with text the app writes, and Deny is the default. Reading a project needs the permission you can revoke under **Tools and projects**. There is no shell: programs are started by absolute path, without arguments, and only `.exe` files. `git_status` runs inside Moby with gitoxide and ignores the repository's own filters and hooks ([ADR 0004](docs/adr/0004-git-status.md)). Tool output is cleaned, cut to 8 KiB and marked as untrusted data. At most four tool steps and ten seconds per tool in one request. **Activity** records what was decided, never the contents.
 
 Please do not put real credentials in issues or pull requests.
 

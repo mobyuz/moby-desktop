@@ -80,15 +80,25 @@ impl VerifiedProgram {
 
 fn is_device_name(component: &str) -> bool {
     // Windows ignores the extension and trailing spaces: "NUL.txt" and "con .x" are the device.
-    let stem = component.split('.').next().unwrap_or("").trim_end_matches(' ');
+    let stem = component
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ');
     let upper = stem.to_uppercase();
-    if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" | "CLOCK$") {
+    if matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" | "CLOCK$"
+    ) {
         return true;
     }
     let mut chars = upper.chars();
     let prefix: String = chars.by_ref().take(3).collect();
     matches!(prefix.as_str(), "COM" | "LPT")
-        && matches!(chars.next(), Some('0'..='9' | '\u{B9}' | '\u{B2}' | '\u{B3}'))
+        && matches!(
+            chars.next(),
+            Some('0'..='9' | '\u{B9}' | '\u{B2}' | '\u{B3}')
+        )
         && chars.next().is_none()
 }
 
@@ -98,7 +108,9 @@ fn check_component(component: &str) -> Result<(), PathError> {
         || component == ".."
         || component.ends_with('.')
         || component.ends_with(' ')
-        || component.chars().any(|c| matches!(c, '<' | '>' | ':' | '"' | '/' | '|' | '?' | '*') || is_unsafe_char(c))
+        || component.chars().any(|c| {
+            matches!(c, '<' | '>' | ':' | '"' | '/' | '|' | '?' | '*') || is_unsafe_char(c)
+        })
         || is_device_name(component)
     {
         return Err(PathError::Name);
@@ -122,7 +134,11 @@ pub fn check_form(path: &str) -> Result<(), PathError> {
     for component in parts {
         check_component(component).map_err(|_| {
             // Doubled or trailing backslashes leave an empty component.
-            if component.is_empty() { PathError::Form } else { PathError::Name }
+            if component.is_empty() {
+                PathError::Form
+            } else {
+                PathError::Name
+            }
         })?;
         count += 1;
     }
@@ -195,7 +211,10 @@ pub fn verify_dir(stored: &str) -> Result<VerifiedDir, PathError> {
 
 fn has_exe_extension(path: &str) -> bool {
     let name = path.rsplit('\\').next().unwrap_or("");
-    name.len() > 4 && name.get(name.len() - 4..).is_some_and(|ext| ext.eq_ignore_ascii_case(".exe"))
+    name.len() > 4
+        && name
+            .get(name.len() - 4..)
+            .is_some_and(|ext| ext.eq_ignore_ascii_case(".exe"))
 }
 
 /// Checks a stored program against the disk: a real file named `*.exe`, not a link, starting with
@@ -282,7 +301,14 @@ pub(crate) mod testing {
             let base = std::env::temp_dir().join(format!("moby-paths-{}", Uuid::new_v4()));
             std::fs::create_dir_all(&base).unwrap();
             // Tests compare canonical forms, so start from one.
-            Self(std::fs::canonicalize(&base).unwrap().to_str().unwrap().trim_start_matches(r"\\?\").into())
+            Self(
+                std::fs::canonicalize(&base)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .trim_start_matches(r"\\?\")
+                    .into(),
+            )
         }
 
         pub fn path(&self, rel: &str) -> PathBuf {
@@ -303,24 +329,32 @@ pub(crate) mod testing {
             std::fs::write(&path, bytes).unwrap();
             path
         }
-
-        pub fn s(&self, rel: &str) -> String {
-            self.path(rel).to_str().unwrap().to_owned()
-        }
     }
 
     impl Drop for Scratch {
         fn drop(&mut self) {
             // A junction must be removed as a junction: remove_dir_all would try to follow some.
-            let _ = Command::new("cmd").args(["/C", "rd", "/S", "/Q"]).arg(&self.0).output();
+            let _ = Command::new("cmd")
+                .args(["/C", "rd", "/S", "/Q"])
+                .arg(&self.0)
+                .output();
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 
     /// `mklink /J link target`. Needs no privilege.
     pub fn junction(link: &Path, target: &Path) {
-        let out = Command::new("cmd").args(["/C", "mklink", "/J"]).arg(link).arg(target).output().unwrap();
-        assert!(out.status.success(), "mklink failed: {}", String::from_utf8_lossy(&out.stdout));
+        let out = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "mklink failed: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
     }
 
     /// Removes a junction without touching its target.
@@ -333,8 +367,17 @@ pub(crate) mod testing {
         let exe = std::env::current_exe().unwrap();
         let target = exe.parent().unwrap().parent().unwrap();
         let helper = target.join("examples").join("test_helper.exe");
-        assert!(helper.exists(), "build it first: cargo test builds examples; missing {}", helper.display());
-        std::fs::canonicalize(helper).unwrap().to_str().unwrap().trim_start_matches(r"\\?\").into()
+        assert!(
+            helper.exists(),
+            "build it first: cargo test builds examples; missing {}",
+            helper.display()
+        );
+        std::fs::canonicalize(helper)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .trim_start_matches(r"\\?\")
+            .into()
     }
 }
 
@@ -345,7 +388,13 @@ mod tests {
 
     #[test]
     fn plain_drive_paths_pass_the_form_check() {
-        for ok in [r"C:\Users\me\proj", r"d:\a b\c.d", r"C:\a\..b", "C:\\caf\u{e9}\\\u{4e2d}\u{6587}", r"C:\PROGRA~1\x"] {
+        for ok in [
+            r"C:\Users\me\proj",
+            r"d:\a b\c.d",
+            r"C:\a\..b",
+            "C:\\caf\u{e9}\\\u{4e2d}\u{6587}",
+            r"C:\PROGRA~1\x",
+        ] {
             assert_eq!(check_form(ok), Ok(()), "{ok}");
         }
     }
@@ -358,7 +407,10 @@ mod tests {
             (r"\\.\C:\x", PathError::Form),
             (r"\\.\PhysicalDrive0", PathError::Form),
             (r"\\?\UNC\server\share\x", PathError::Form),
-            (r"\\?\Volume{01234567-0123-0123-0123-0123456789ab}\x", PathError::Form),
+            (
+                r"\\?\Volume{01234567-0123-0123-0123-0123456789ab}\x",
+                PathError::Form,
+            ),
             ("C:/x/y", PathError::Form),
             (r"C:x", PathError::Form),
             (r"\x", PathError::Form),
@@ -405,15 +457,29 @@ mod tests {
         for (path, expected) in corpus {
             assert_eq!(check_form(path), Err(*expected), "{path:?}");
         }
-        assert_eq!(check_form(&format!("C:\\{}", "a".repeat(260))), Err(PathError::TooLong));
+        assert_eq!(
+            check_form(&format!("C:\\{}", "a".repeat(260))),
+            Err(PathError::TooLong)
+        );
     }
 
     #[test]
     fn device_names_are_matched_the_way_windows_does() {
-        for name in ["CON", "con", "Nul.txt", "COM1", "lpt9", "COM0", "aux.x.y", "CONIN$"] {
+        for name in [
+            "CON", "con", "Nul.txt", "COM1", "lpt9", "COM0", "aux.x.y", "CONIN$",
+        ] {
             assert!(is_device_name(name), "{name}");
         }
-        for name in ["CONSOLE", "COM10", "COMX", "LPT", "console.txt", "nu", "com", "a.con"] {
+        for name in [
+            "CONSOLE",
+            "COM10",
+            "COMX",
+            "LPT",
+            "console.txt",
+            "nu",
+            "com",
+            "a.con",
+        ] {
             assert!(!is_device_name(name), "{name}");
         }
     }
@@ -423,11 +489,17 @@ mod tests {
         let scratch = Scratch::new();
         let dir = scratch.dir("proj");
         let registered = register_dir(dir.to_str().unwrap()).unwrap();
-        assert!(!registered.path.starts_with(r"\\"), "our own output has no \\\\?\\ prefix");
+        assert!(
+            !registered.path.starts_with(r"\\"),
+            "our own output has no \\\\?\\ prefix"
+        );
         assert!(same_path(&registered.path, dir.to_str().unwrap()));
         assert!(registered.verbatim().to_str().unwrap().starts_with(r"\\?\"));
         assert_eq!(verify_dir(&registered.path), Ok(registered.clone()));
-        assert_eq!(register_dir(scratch.path("missing").to_str().unwrap()), Err(PathError::Missing));
+        assert_eq!(
+            register_dir(scratch.path("missing").to_str().unwrap()),
+            Err(PathError::Missing)
+        );
     }
 
     #[test]
@@ -445,8 +517,14 @@ mod tests {
         let scratch = Scratch::new();
         let file = scratch.file("plain.txt", b"hello");
         let dir = scratch.dir("folder.exe");
-        assert_eq!(register_dir(file.to_str().unwrap()), Err(PathError::WrongKind));
-        assert_eq!(register_program(dir.to_str().unwrap()), Err(PathError::WrongKind));
+        assert_eq!(
+            register_dir(file.to_str().unwrap()),
+            Err(PathError::WrongKind)
+        );
+        assert_eq!(
+            register_program(dir.to_str().unwrap()),
+            Err(PathError::WrongKind)
+        );
     }
 
     #[test]
@@ -476,7 +554,10 @@ mod tests {
 
         std::fs::remove_dir(&root).unwrap();
         junction(&root, &elsewhere);
-        assert!(matches!(verify_dir(&registered.path), Err(PathError::Changed | PathError::Reparse)));
+        assert!(matches!(
+            verify_dir(&registered.path),
+            Err(PathError::Changed | PathError::Reparse)
+        ));
         remove_junction(&root);
 
         // A parent swapped out from under a deeper registration is caught the same way.
@@ -503,7 +584,10 @@ mod tests {
         let scratch = Scratch::new();
         let long = scratch.dir("a long directory name");
         let out = std::process::Command::new("cmd")
-            .args(["/C", &format!("for %I in (\"{}\") do @echo %~sI", long.display())])
+            .args([
+                "/C",
+                &format!("for %I in (\"{}\") do @echo %~sI", long.display()),
+            ])
             .output()
             .unwrap();
         let short = String::from_utf8_lossy(&out.stdout).trim().to_owned();
@@ -511,9 +595,12 @@ mod tests {
             eprintln!("8.3 names are off on this volume; skipping the short-name check");
             return;
         }
-                assert_eq!(verify_dir(&short), Err(PathError::Changed));
+        assert_eq!(verify_dir(&short), Err(PathError::Changed));
         let registered = register_dir(&short).unwrap();
-        assert!(same_path(&registered.path, long.to_str().unwrap()), "registration stores the long form");
+        assert!(
+            same_path(&registered.path, long.to_str().unwrap()),
+            "registration stores the long form"
+        );
     }
 
     #[test]
@@ -523,7 +610,10 @@ mod tests {
         let stream = format!("{}:hidden", file.display());
         std::fs::write(&stream, b"secret stream").unwrap();
         assert_eq!(register_dir(&stream), Err(PathError::Name));
-        assert_eq!(verify_program(&format!("{}:evil.exe", file.display())), Err(PathError::Name));
+        assert_eq!(
+            verify_program(&format!("{}:evil.exe", file.display())),
+            Err(PathError::Name)
+        );
         assert_eq!(verify_dir(&stream), Err(PathError::Name));
     }
 
@@ -540,14 +630,40 @@ mod tests {
         assert!(register_program(good.to_str().unwrap()).is_ok());
         assert!(register_program(&good.to_str().unwrap().to_uppercase()).is_ok());
 
-        for name in ["a.bat", "a.cmd", "a.ps1", "a.lnk", "a.com", "a.vbs", "a.js", "a.msi", "a.scr", "a.exe.txt", "a.txt", "a"] {
+        for name in [
+            "a.bat",
+            "a.cmd",
+            "a.ps1",
+            "a.lnk",
+            "a.com",
+            "a.vbs",
+            "a.js",
+            "a.msi",
+            "a.scr",
+            "a.exe.txt",
+            "a.txt",
+            "a",
+        ] {
             let path = scratch.file(name, &fake_pe());
-            assert_eq!(register_program(path.to_str().unwrap()), Err(PathError::NotProgram), "{name}");
+            assert_eq!(
+                register_program(path.to_str().unwrap()),
+                Err(PathError::NotProgram),
+                "{name}"
+            );
         }
-        let imposter = scratch.file("notreal.exe", b"echo this is a script, not a PE file ......................................");
-        assert_eq!(register_program(imposter.to_str().unwrap()), Err(PathError::NotProgram));
+        let imposter = scratch.file(
+            "notreal.exe",
+            b"echo this is a script, not a PE file ......................................",
+        );
+        assert_eq!(
+            register_program(imposter.to_str().unwrap()),
+            Err(PathError::NotProgram)
+        );
         let tiny = scratch.file("tiny.exe", b"MZ");
-        assert_eq!(register_program(tiny.to_str().unwrap()), Err(PathError::WrongKind));
+        assert_eq!(
+            register_program(tiny.to_str().unwrap()),
+            Err(PathError::WrongKind)
+        );
     }
 
     #[test]
@@ -568,7 +684,10 @@ mod tests {
         scratch.file("other/tool.exe", &fake_pe());
         std::fs::remove_dir_all(&dir).unwrap();
         junction(&dir, &other);
-        assert!(matches!(verify_program(&registered.path), Err(PathError::Changed | PathError::Reparse)));
+        assert!(matches!(
+            verify_program(&registered.path),
+            Err(PathError::Changed | PathError::Reparse)
+        ));
         remove_junction(&dir);
     }
 
@@ -579,9 +698,18 @@ mod tests {
         let registered = register_program(exe.to_str().unwrap()).unwrap();
         let (lock, verified) = lock_program(&registered.path).unwrap();
         assert_eq!(verified, registered);
-        assert!(std::fs::write(&exe, b"replacement").is_err(), "writes are refused while locked");
-        assert!(std::fs::remove_file(&exe).is_err(), "deleting is refused while locked");
-        assert!(std::fs::rename(&exe, scratch.path("moved.exe")).is_err(), "renaming is refused while locked");
+        assert!(
+            std::fs::write(&exe, b"replacement").is_err(),
+            "writes are refused while locked"
+        );
+        assert!(
+            std::fs::remove_file(&exe).is_err(),
+            "deleting is refused while locked"
+        );
+        assert!(
+            std::fs::rename(&exe, scratch.path("moved.exe")).is_err(),
+            "renaming is refused while locked"
+        );
         drop(lock);
         assert!(std::fs::remove_file(&exe).is_ok());
     }

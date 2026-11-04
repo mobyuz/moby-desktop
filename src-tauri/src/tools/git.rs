@@ -63,9 +63,13 @@ impl Summary {
         }
         match (&self.upstream, self.ahead, self.behind) {
             (Some(upstream), Some(ahead), Some(behind)) => {
-                out.push_str(&format!("upstream: {upstream} (ahead {ahead}, behind {behind})\n"));
+                out.push_str(&format!(
+                    "upstream: {upstream} (ahead {ahead}, behind {behind})\n"
+                ));
             }
-            (Some(upstream), _, _) => out.push_str(&format!("upstream: {upstream} (not compared)\n")),
+            (Some(upstream), _, _) => {
+                out.push_str(&format!("upstream: {upstream} (not compared)\n"))
+            }
             _ => out.push_str("upstream: none\n"),
         }
         if let Some(state) = self.state {
@@ -83,7 +87,10 @@ impl Summary {
             out.push_str(&format!("{letter} {name}\n"));
         }
         if self.total() > self.names.len() {
-            out.push_str(&format!("... and {} more\n", self.total() - self.names.len()));
+            out.push_str(&format!(
+                "... and {} more\n",
+                self.total() - self.names.len()
+            ));
         }
         out
     }
@@ -109,7 +116,9 @@ fn clean_name(raw: &[u8], limit: usize) -> String {
     text::short_line(&String::from_utf8_lossy(raw), limit)
 }
 
-fn letter_for_worktree(status: &gix::status::plumbing::index_as_worktree::EntryStatus<(), gix::submodule::Status>) -> Option<(char, Kind)> {
+fn letter_for_worktree(
+    status: &gix::status::plumbing::index_as_worktree::EntryStatus<(), gix::submodule::Status>,
+) -> Option<(char, Kind)> {
     use gix::status::plumbing::index_as_worktree::{Change, EntryStatus};
     match status {
         EntryStatus::Conflict { .. } => Some(('U', Kind::Conflicted)),
@@ -143,31 +152,54 @@ pub fn status(project: &VerifiedDir, cancel: &Arc<AtomicBool>) -> Result<Summary
     if !is_plain_dir(&dot_git) {
         return Err(ToolFailureCode::Unavailable);
     }
-    let repo = gix::open_opts(project.os(), safe_open_options()).map_err(|_| ToolFailureCode::Failed)?;
+    let repo =
+        gix::open_opts(project.os(), safe_open_options()).map_err(|_| ToolFailureCode::Failed)?;
     if repo.is_bare() {
         return Err(ToolFailureCode::Unavailable);
     }
     // `core.worktree` can move the working tree anywhere. The answer must be about the registered folder.
-    let workdir = repo.workdir().and_then(|dir| dir.to_str()).and_then(|dir| paths::canonical_of(dir.trim_end_matches(['\\', '/'])).ok());
-    let git_dir = repo.git_dir().to_str().and_then(|dir| paths::canonical_of(dir.trim_end_matches(['\\', '/'])).ok());
+    let workdir = repo
+        .workdir()
+        .and_then(|dir| dir.to_str())
+        .and_then(|dir| paths::canonical_of(dir.trim_end_matches(['\\', '/'])).ok());
+    let git_dir = repo
+        .git_dir()
+        .to_str()
+        .and_then(|dir| paths::canonical_of(dir.trim_end_matches(['\\', '/'])).ok());
     let expected_git_dir = paths::canonical_of(dot_git.to_str().unwrap_or("")).ok();
-    if !workdir.as_deref().is_some_and(|dir| dir.eq_ignore_ascii_case(&project.path)) || git_dir.is_none() || git_dir != expected_git_dir {
+    if !workdir
+        .as_deref()
+        .is_some_and(|dir| dir.eq_ignore_ascii_case(&project.path))
+        || git_dir.is_none()
+        || git_dir != expected_git_dir
+    {
         return Err(ToolFailureCode::Unavailable);
     }
 
-    let mut summary = Summary { state: repo.state().map(|_| "an operation such as a merge or rebase"), ..Summary::default() };
+    let mut summary = Summary {
+        state: repo
+            .state()
+            .map(|_| "an operation such as a merge or rebase"),
+        ..Summary::default()
+    };
     summary.branch = match repo.head_name() {
         Ok(Some(name)) => clean_name(name.shorten(), 80),
         Ok(None) => {
             summary.detached = true;
-            repo.head_id().ok().map_or_else(|| "unknown".to_owned(), |id| id.to_hex_with_len(8).to_string())
+            repo.head_id().ok().map_or_else(
+                || "unknown".to_owned(),
+                |id| id.to_hex_with_len(8).to_string(),
+            )
         }
         Err(_) => return Err(ToolFailureCode::Failed),
     };
 
     // A submodule is a repository we deliberately do not open, so its state is unknown.
     let index = repo.index_or_empty().map_err(|_| ToolFailureCode::Failed)?;
-    let has_submodules = index.entries().iter().any(|entry| entry.mode == gix::index::entry::Mode::COMMIT);
+    let has_submodules = index
+        .entries()
+        .iter()
+        .any(|entry| entry.mode == gix::index::entry::Mode::COMMIT);
     drop(index);
     if has_submodules {
         return Err(ToolFailureCode::PartialResult);
@@ -205,11 +237,16 @@ pub fn status(project: &VerifiedDir, cancel: &Arc<AtomicBool>) -> Result<Summary
                 };
                 (letter, Kind::Staged)
             }
-            gix::status::Item::IndexWorktree(gix::status::index_worktree::Item::Modification { status, .. }) => match letter_for_worktree(status) {
+            gix::status::Item::IndexWorktree(gix::status::index_worktree::Item::Modification {
+                status,
+                ..
+            }) => match letter_for_worktree(status) {
                 Some(found) => found,
                 None => continue,
             },
-            gix::status::Item::IndexWorktree(gix::status::index_worktree::Item::DirectoryContents { entry, .. }) => {
+            gix::status::Item::IndexWorktree(
+                gix::status::index_worktree::Item::DirectoryContents { entry, .. },
+            ) => {
                 if entry.status == gix::dir::entry::Status::Ignored(gix::ignore::Kind::Expendable)
                     || matches!(entry.status, gix::dir::entry::Status::Ignored(_))
                 {
@@ -217,7 +254,9 @@ pub fn status(project: &VerifiedDir, cancel: &Arc<AtomicBool>) -> Result<Summary
                 }
                 ('?', Kind::Untracked)
             }
-            gix::status::Item::IndexWorktree(gix::status::index_worktree::Item::Rewrite { .. }) => ('R', Kind::Unstaged),
+            gix::status::Item::IndexWorktree(gix::status::index_worktree::Item::Rewrite {
+                ..
+            }) => ('R', Kind::Unstaged),
         };
         match kind {
             Kind::Staged => summary.staged += 1,
@@ -226,7 +265,9 @@ pub fn status(project: &VerifiedDir, cancel: &Arc<AtomicBool>) -> Result<Summary
             Kind::Conflicted => summary.conflicted += 1,
         }
         if summary.names.len() < MAX_NAMES {
-            summary.names.push((letter, clean_name(item.location().as_ref(), 120)));
+            summary
+                .names
+                .push((letter, clean_name(item.location().as_ref(), 120)));
         }
     }
     if cancel.load(Ordering::Relaxed) {
@@ -244,7 +285,9 @@ fn compare_with_upstream(repo: &gix::Repository, summary: &mut Summary) {
     if summary.detached {
         return;
     }
-    let Ok(Some(head)) = repo.head_name() else { return };
+    let Ok(Some(head)) = repo.head_name() else {
+        return;
+    };
     // gix's own lookup ignores repository config because of the filter above, so the two plain
     // settings are read here. They only name a reference; nothing is run from them.
     let short = head.shorten().to_string();
@@ -256,18 +299,26 @@ fn compare_with_upstream(repo: &gix::Repository, summary: &mut Summary) {
         return;
     };
     let (remote, merge) = (remote.to_string(), merge.to_string());
-    let Some(branch) = merge.strip_prefix("refs/heads/") else { return };
+    let Some(branch) = merge.strip_prefix("refs/heads/") else {
+        return;
+    };
     if remote == "." || remote.is_empty() || remote.contains(['\\', ':', ' ']) {
         return;
     }
-    let Ok(upstream_name) = gix::refs::FullName::try_from(format!("refs/remotes/{remote}/{branch}")) else {
+    let Ok(upstream_name) =
+        gix::refs::FullName::try_from(format!("refs/remotes/{remote}/{branch}"))
+    else {
         return;
     };
     summary.upstream = Some(clean_name(upstream_name.shorten(), 80));
-    let (Ok(local), Ok(mut upstream)) = (repo.head_id(), repo.find_reference(upstream_name.as_ref())) else {
+    let (Ok(local), Ok(mut upstream)) =
+        (repo.head_id(), repo.find_reference(upstream_name.as_ref()))
+    else {
         return;
     };
-    let Ok(upstream) = upstream.peel_to_id() else { return };
+    let Ok(upstream) = upstream.peel_to_id() else {
+        return;
+    };
     let count = |from: gix::ObjectId, hidden: gix::ObjectId| -> Option<usize> {
         let walk = repo.rev_walk([from]).with_hidden([hidden]).all().ok()?;
         let mut n = 0;

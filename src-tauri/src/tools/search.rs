@@ -16,8 +16,22 @@ pub const MAX_DEPTH: usize = 16;
 
 /// Relative paths (with backslashes) of entries whose name contains `query`, case-insensitively.
 /// Fewer than `max_results` found because a limit ended the walk is `PartialResult`.
-pub fn search(root: &VerifiedDir, query: &str, max_results: usize, cancel: &AtomicBool, deadline: Instant) -> Result<Vec<String>, ToolFailureCode> {
-    search_with_limits(root, query, max_results, cancel, deadline, MAX_ENTRIES, MAX_DEPTH)
+pub fn search(
+    root: &VerifiedDir,
+    query: &str,
+    max_results: usize,
+    cancel: &AtomicBool,
+    deadline: Instant,
+) -> Result<Vec<String>, ToolFailureCode> {
+    search_with_limits(
+        root,
+        query,
+        max_results,
+        cancel,
+        deadline,
+        MAX_ENTRIES,
+        MAX_DEPTH,
+    )
 }
 
 pub(crate) fn search_with_limits(
@@ -52,7 +66,11 @@ pub(crate) fn search_with_limits(
             };
             seen += 1;
             if seen > max_entries {
-                return if found.len() >= max_results { Ok(found) } else { Err(ToolFailureCode::PartialResult) };
+                return if found.len() >= max_results {
+                    Ok(found)
+                } else {
+                    Err(ToolFailureCode::PartialResult)
+                };
             }
             // Metadata of the entry itself, never of what a link points to.
             let Ok(meta) = entry.metadata() else {
@@ -63,7 +81,11 @@ pub(crate) fn search_with_limits(
                 continue;
             }
             let name = entry.file_name().to_string_lossy().into_owned();
-            let child_rel = if rel.is_empty() { name.clone() } else { format!("{rel}\\{name}") };
+            let child_rel = if rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{rel}\\{name}")
+            };
             if name.to_lowercase().contains(&needle) {
                 found.push(text::short_line(&child_rel, 120));
                 if found.len() >= max_results {
@@ -79,7 +101,11 @@ pub(crate) fn search_with_limits(
             }
         }
     }
-    if truncated { Err(ToolFailureCode::PartialResult) } else { Ok(found) }
+    if truncated {
+        Err(ToolFailureCode::PartialResult)
+    } else {
+        Ok(found)
+    }
 }
 
 #[cfg(test)]
@@ -88,9 +114,19 @@ mod tests {
     use crate::paths::testing::{Scratch, junction, remove_junction};
     use std::time::Duration;
 
-    fn run(root: &std::path::Path, query: &str, max: usize) -> Result<Vec<String>, ToolFailureCode> {
+    fn run(
+        root: &std::path::Path,
+        query: &str,
+        max: usize,
+    ) -> Result<Vec<String>, ToolFailureCode> {
         let verified = paths::register_dir(root.to_str().unwrap()).unwrap();
-        search(&verified, query, max, &AtomicBool::new(false), Instant::now() + Duration::from_secs(10))
+        search(
+            &verified,
+            query,
+            max,
+            &AtomicBool::new(false),
+            Instant::now() + Duration::from_secs(10),
+        )
     }
 
     #[test]
@@ -102,10 +138,23 @@ mod tests {
         scratch.file("root/a+b (1).txt", b"x");
         let found = run(&root, "main", 10).unwrap();
         assert_eq!(found, ["src\\Main.rs"]);
-        assert!(run(&root, "needle", 10).unwrap().is_empty(), "contents are never searched");
-        assert_eq!(run(&root, "a+b (1)", 10).unwrap(), ["a+b (1).txt"], "no pattern syntax");
-        assert!(run(&root, ".*", 10).unwrap().is_empty(), "a regex is just text");
-        assert!(run(&root, "*", 10).unwrap().is_empty(), "a glob is just text");
+        assert!(
+            run(&root, "needle", 10).unwrap().is_empty(),
+            "contents are never searched"
+        );
+        assert_eq!(
+            run(&root, "a+b (1)", 10).unwrap(),
+            ["a+b (1).txt"],
+            "no pattern syntax"
+        );
+        assert!(
+            run(&root, ".*", 10).unwrap().is_empty(),
+            "a regex is just text"
+        );
+        assert!(
+            run(&root, "*", 10).unwrap().is_empty(),
+            "a glob is just text"
+        );
     }
 
     #[test]
@@ -127,7 +176,10 @@ mod tests {
         scratch.file("root/inside.txt", b"x");
         junction(&root.join("exit"), &outside);
         assert!(run(&root, "secret", 10).unwrap().is_empty());
-        assert!(run(&root, "exit", 10).unwrap().is_empty(), "the link itself is skipped too");
+        assert!(
+            run(&root, "exit", 10).unwrap().is_empty(),
+            "the link itself is skipped too"
+        );
         assert_eq!(run(&root, "inside", 10).unwrap().len(), 1);
         remove_junction(&root.join("exit"));
     }
@@ -143,12 +195,29 @@ mod tests {
         let verified = paths::register_dir(root.to_str().unwrap()).unwrap();
         let cancel = AtomicBool::new(false);
         let later = Instant::now() + Duration::from_secs(10);
-        assert_eq!(search_with_limits(&verified, "zzz", 5, &cancel, later, 5, 10), Err(ToolFailureCode::PartialResult));
-        assert_eq!(search_with_limits(&verified, "zzz", 5, &cancel, later, 1000, 1), Err(ToolFailureCode::PartialResult));
-        assert_eq!(search_with_limits(&verified, "deep-hit", 5, &cancel, later, 1000, 10).unwrap().len(), 1);
-        assert_eq!(search_with_limits(&verified, "f", 5, &cancel, Instant::now(), 1000, 10), Err(ToolFailureCode::Timeout));
+        assert_eq!(
+            search_with_limits(&verified, "zzz", 5, &cancel, later, 5, 10),
+            Err(ToolFailureCode::PartialResult)
+        );
+        assert_eq!(
+            search_with_limits(&verified, "zzz", 5, &cancel, later, 1000, 1),
+            Err(ToolFailureCode::PartialResult)
+        );
+        assert_eq!(
+            search_with_limits(&verified, "deep-hit", 5, &cancel, later, 1000, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            search_with_limits(&verified, "f", 5, &cancel, Instant::now(), 1000, 10),
+            Err(ToolFailureCode::Timeout)
+        );
         cancel.store(true, Ordering::Relaxed);
-        assert_eq!(search_with_limits(&verified, "f", 5, &cancel, later, 1000, 10), Err(ToolFailureCode::Canceled));
+        assert_eq!(
+            search_with_limits(&verified, "f", 5, &cancel, later, 1000, 10),
+            Err(ToolFailureCode::Canceled)
+        );
     }
 
     #[test]

@@ -23,7 +23,14 @@ const MIGRATIONS: &[&str] = &[
 ];
 
 /// Tables whose rows belong to one account.
-const ACCOUNT_TABLES: [&str; 6] = ["conversations", "projects", "allowed_apps", "grants", "reminders", "audit_log"];
+const ACCOUNT_TABLES: [&str; 6] = [
+    "conversations",
+    "projects",
+    "allowed_apps",
+    "grants",
+    "reminders",
+    "audit_log",
+];
 
 const LANGUAGES: [&str; 3] = ["uz", "ru", "en"];
 const ROLES: [&str; 2] = ["user", "moby"];
@@ -63,7 +70,10 @@ impl From<StoreError> for Failure {
                 Failure::new("invalid_input", &format!("That {what} isn't valid."))
             }
             StoreError::NotFound => Failure::new("not_found", "That item is no longer here."),
-            StoreError::Full(what) => Failure::new("limit_reached", &format!("There are already as many {what} as Moby allows.")),
+            StoreError::Full(what) => Failure::new(
+                "limit_reached",
+                &format!("There are already as many {what} as Moby allows."),
+            ),
             StoreError::Database(error) => {
                 // SQLite messages name tables and columns, never the stored values.
                 eprintln!("moby: history database error: {error}");
@@ -100,7 +110,11 @@ pub struct StoredMessage {
 #[cfg(test)]
 impl StoredMessage {
     pub(crate) fn for_test(text: &str) -> Self {
-        Self { id: Uuid::new_v4().hyphenated().to_string(), role: "user".into(), text: text.into() }
+        Self {
+            id: Uuid::new_v4().hyphenated().to_string(),
+            role: "user".into(),
+            text: text.into(),
+        }
     }
 }
 
@@ -369,7 +383,10 @@ impl Db {
         check_account(user)?;
         let tx = self.conn.transaction()?;
         for table in ACCOUNT_TABLES {
-            tx.execute(&format!("DELETE FROM {table} WHERE user_id = ?1"), params![user])?;
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE user_id = ?1"),
+                params![user],
+            )?;
         }
         tx.commit()?;
         self.conn.execute_batch("VACUUM")?;
@@ -418,7 +435,10 @@ impl Store {
         }
     }
 
-    pub(crate) fn with<T>(&self, run: impl FnOnce(&mut Db) -> Result<T, StoreError>) -> Result<T, Failure> {
+    pub(crate) fn with<T>(
+        &self,
+        run: impl FnOnce(&mut Db) -> Result<T, StoreError>,
+    ) -> Result<T, Failure> {
         let db = self.db.as_ref().ok_or(StoreError::Unavailable)?;
         // A panic while the lock was held leaves the SQLite file consistent, so keep going.
         let mut db = db.lock().unwrap_or_else(PoisonError::into_inner);

@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use moby_protocol::{
-    AgentMessage, AgentTurnRequest, AgentTurnResponse, Expression, Language, ResourceKind, Script, StableId, ToolCall, ToolFailureCode, ToolName, ToolRequest,
-    ToolResource, ToolResult,
+    AgentMessage, AgentTurnRequest, AgentTurnResponse, Expression, Language, ResourceKind, Script,
+    StableId, ToolCall, ToolFailureCode, ToolName, ToolRequest, ToolResource, ToolResult,
 };
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -46,7 +46,9 @@ pub enum Decision {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum UiEvent {
-    SpeechDelta { text: String },
+    SpeechDelta {
+        text: String,
+    },
     /// Provisional speech from a request that ended in a tool call is dropped.
     ResetSpeech,
     ApprovalRequired {
@@ -61,10 +63,24 @@ pub enum UiEvent {
         allow_session: bool,
         timeout_ms: u64,
     },
-    ApprovalClosed { approval_id: String, outcome: &'static str },
-    ToolResult { tool: &'static str, description: String, outcome: &'static str, note: String },
-    Completed { speech_text: String, display_text: Option<String>, expression_hint: Expression },
-    Error { error: UiError },
+    ApprovalClosed {
+        approval_id: String,
+        outcome: &'static str,
+    },
+    ToolResult {
+        tool: &'static str,
+        description: String,
+        outcome: &'static str,
+        note: String,
+    },
+    Completed {
+        speech_text: String,
+        display_text: Option<String>,
+        expression_hint: Expression,
+    },
+    Error {
+        error: UiError,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -91,7 +107,10 @@ pub struct Cancel {
 
 impl Cancel {
     fn new() -> Self {
-        Self { flag: Arc::new(AtomicBool::new(false)), notify: Arc::new(Notify::new()) }
+        Self {
+            flag: Arc::new(AtomicBool::new(false)),
+            notify: Arc::new(Notify::new()),
+        }
     }
 
     fn cancel(&self) {
@@ -139,12 +158,21 @@ enum InKind {
 impl TurnInput {
     #[cfg(test)]
     pub(crate) fn for_test(text: &str) -> Self {
-        Self { messages: vec![InMessage { kind: InKind::User, text: text.to_owned() }], language: Language::En }
+        Self {
+            messages: vec![InMessage {
+                kind: InKind::User,
+                text: text.to_owned(),
+            }],
+            language: Language::En,
+        }
     }
 
     fn into_messages(self) -> Result<(Vec<AgentMessage>, Language), Failure> {
         let bad = || Failure::new("invalid_input", "That conversation can't be sent.");
-        if self.messages.is_empty() || self.messages.len() > MAX_MESSAGES || self.messages.last().map(|m| m.kind) != Some(InKind::User) {
+        if self.messages.is_empty()
+            || self.messages.len() > MAX_MESSAGES
+            || self.messages.last().map(|m| m.kind) != Some(InKind::User)
+        {
             return Err(bad());
         }
         let mut out = Vec::with_capacity(self.messages.len());
@@ -170,30 +198,58 @@ struct Offer {
 
 impl Offer {
     fn allows(&self, request: &ToolRequest) -> bool {
-        let has = |kind: ResourceKind, id: &StableId| self.resources.iter().any(|r| r.kind == kind && &r.id == id);
+        let has = |kind: ResourceKind, id: &StableId| {
+            self.resources.iter().any(|r| r.kind == kind && &r.id == id)
+        };
         let (name, ok) = match request {
-            ToolRequest::GitStatus { project_id } => (ToolName::GitStatus, has(ResourceKind::Project, project_id)),
-            ToolRequest::OpenApp { app_id } => (ToolName::OpenApp, has(ResourceKind::App, app_id)),
-            ToolRequest::OpenProject { project_id, app_id } => {
-                (ToolName::OpenProject, has(ResourceKind::Project, project_id) && app_id.as_ref().is_none_or(|id| has(ResourceKind::App, id)))
+            ToolRequest::GitStatus { project_id } => {
+                (ToolName::GitStatus, has(ResourceKind::Project, project_id))
             }
-            ToolRequest::SearchFiles { root_id, .. } => (ToolName::SearchFiles, has(ResourceKind::SearchRoot, root_id)),
+            ToolRequest::OpenApp { app_id } => (ToolName::OpenApp, has(ResourceKind::App, app_id)),
+            ToolRequest::OpenProject { project_id, app_id } => (
+                ToolName::OpenProject,
+                has(ResourceKind::Project, project_id)
+                    && app_id.as_ref().is_none_or(|id| has(ResourceKind::App, id)),
+            ),
+            ToolRequest::SearchFiles { root_id, .. } => (
+                ToolName::SearchFiles,
+                has(ResourceKind::SearchRoot, root_id),
+            ),
             ToolRequest::CreateReminder { .. } => (ToolName::CreateReminder, true),
         };
         ok && self.tools.contains(&name)
     }
 }
 
-fn build_offer(store: &Store, sessions: &SessionGrants, user: &str, epoch: u64, now: i64) -> Result<Offer, Failure> {
-    let (projects, apps, grants) = store.with(|db| Ok((db.projects(user)?, db.apps(user)?, db.grants(user, now)?)))?;
+fn build_offer(
+    store: &Store,
+    sessions: &SessionGrants,
+    user: &str,
+    epoch: u64,
+    now: i64,
+) -> Result<Offer, Failure> {
+    let (projects, apps, grants) =
+        store.with(|db| Ok((db.projects(user)?, db.apps(user)?, db.grants(user, now)?)))?;
     let id = |value: &str| StableId::new(value).ok();
-    let resource = |kind, value: &str, name: &str| id(value).map(|id| ToolResource { kind, id, display_name: text::display_name(name, 100) });
+    let resource = |kind, value: &str, name: &str| {
+        id(value).map(|id| ToolResource {
+            kind,
+            id,
+            display_name: text::display_name(name, 100),
+        })
+    };
     let mut resources = Vec::new();
     let (mut git, mut search) = (false, false);
     for project in &projects {
         let root = registry::root_of(&project.id).unwrap_or_default();
-        let git_ok = grants.iter().any(|g| g.tool == "git_status" && g.resource_id == project.id) || sessions.has(user, epoch, "git_status", &project.id);
-        let search_ok = grants.iter().any(|g| g.tool == "search_files" && g.resource_id == root) || sessions.has(user, epoch, "search_files", &root);
+        let git_ok = grants
+            .iter()
+            .any(|g| g.tool == "git_status" && g.resource_id == project.id)
+            || sessions.has(user, epoch, "git_status", &project.id);
+        let search_ok = grants
+            .iter()
+            .any(|g| g.tool == "search_files" && g.resource_id == root)
+            || sessions.has(user, epoch, "search_files", &root);
         git |= git_ok;
         search |= search_ok;
         resources.extend(resource(ResourceKind::Project, &project.id, &project.name));
@@ -218,7 +274,10 @@ fn build_offer(store: &Store, sessions: &SessionGrants, user: &str, epoch: u64, 
         tool_list.push(ToolName::OpenProject);
     }
     tool_list.push(ToolName::CreateReminder);
-    Ok(Offer { tools: tool_list, resources })
+    Ok(Offer {
+        tools: tool_list,
+        resources,
+    })
 }
 
 struct Pending {
@@ -287,19 +346,36 @@ impl Agent {
     }
 
     pub fn cancel_turn(&self) {
-        if let Some(cancel) = self.active.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+        if let Some(cancel) = self
+            .active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
             cancel.cancel();
         }
     }
 
     /// The only way an approval is answered. It must name an id this module issued, for this
     /// account and this sign-in, that has not been answered, expired or canceled. The first answer wins.
-    pub fn answer(&self, user: &str, epoch: u64, approval_id: &str, decision: Decision) -> Result<(), Failure> {
+    pub fn answer(
+        &self,
+        user: &str,
+        epoch: u64,
+        approval_id: &str,
+        decision: Decision,
+    ) -> Result<(), Failure> {
         let gone = || Failure::new("not_found", "That request is no longer waiting.");
         let mut pending = self.pending();
-        let entry = pending.get(approval_id).filter(|p| p.user == user && p.epoch == epoch).ok_or_else(gone)?;
+        let entry = pending
+            .get(approval_id)
+            .filter(|p| p.user == user && p.epoch == epoch)
+            .ok_or_else(gone)?;
         if decision == Decision::Session && !entry.allow_session {
-            return Err(Failure::new("invalid_input", "That can only be allowed once."));
+            return Err(Failure::new(
+                "invalid_input",
+                "That can only be allowed once.",
+            ));
         }
         let entry = pending.remove(approval_id).ok_or_else(gone)?;
         entry.tx.send(decision).map_err(|_| gone())
@@ -315,22 +391,54 @@ impl Agent {
         Ok((cancel, TurnGuard(self)))
     }
 
-    fn audit(&self, env: &Env<'_>, tool: &str, resource: Option<&str>, decision: &str, started: Option<Instant>, code: &str) {
-        let duration_ms = started.map(|at| i64::try_from(at.elapsed().as_millis()).unwrap_or(i64::MAX));
-        let record = AuditRecord { tool, resource_id: resource, decision, duration_ms, result_code: Some(code) };
-        if env.store.with(|db| db.audit_add(&env.user, &record, now_ms())).is_err() {
+    fn audit(
+        &self,
+        env: &Env<'_>,
+        tool: &str,
+        resource: Option<&str>,
+        decision: &str,
+        started: Option<Instant>,
+        code: &str,
+    ) {
+        let duration_ms =
+            started.map(|at| i64::try_from(at.elapsed().as_millis()).unwrap_or(i64::MAX));
+        let record = AuditRecord {
+            tool,
+            resource_id: resource,
+            decision,
+            duration_ms,
+            result_code: Some(code),
+        };
+        if env
+            .store
+            .with(|db| db.audit_add(&env.user, &record, now_ms()))
+            .is_err()
+        {
             eprintln!("moby: could not write the activity log");
         }
     }
 
     /// One whole conversation turn, with as many tool rounds as the limit allows.
-    pub async fn run_turn(&self, api: &Api, store: &Store, sink: &dyn Sink, input: TurnInput) -> Result<(), Failure> {
+    pub async fn run_turn(
+        &self,
+        api: &Api,
+        store: &Store,
+        sink: &dyn Sink,
+        input: TurnInput,
+    ) -> Result<(), Failure> {
         let user = api.account_id()?;
         let epoch = api.epoch();
         let (cancel, _guard) = self.begin()?;
         let (mut messages, language) = input.into_messages()?;
         let offer = build_offer(store, &self.sessions, &user, epoch, now_ms())?;
-        let env = Env { api, store, sink, user, epoch, cancel };
+        let env = Env {
+            api,
+            store,
+            sink,
+            user,
+            epoch,
+            cancel,
+        };
         let script = (language == Language::Uz).then_some(Script::Latn);
         let mut rounds = 0;
 
@@ -342,19 +450,25 @@ impl Agent {
                 language: Some(language),
                 script,
             };
-            let body = serde_json::to_value(&request).map_err(|_| Failure::new("unexpected", "Something went wrong. Try again."))?;
+            let body = serde_json::to_value(&request)
+                .map_err(|_| Failure::new("unexpected", "Something went wrong. Try again."))?;
             let response = tokio::select! {
                 response = open_agent_stream(api, &body) => response?,
-                () = env.cancel.cancelled() => return Ok(self.stopped(&env)),
+                () = env.cancel.cancelled() => return self.stopped(&env),
             };
             let mut frames = Frames::new(response);
             let mut provisional = String::new();
             let outcome = loop {
                 let frame = tokio::select! {
                     frame = frames.next() => frame?,
-                    () = env.cancel.cancelled() => return Ok(self.stopped(&env)),
+                    () = env.cancel.cancelled() => return self.stopped(&env),
                 };
-                let Some(frame) = frame else { return Err(Failure::new("offline", "Can't connect to Moby. Check your connection and try again.")) };
+                let Some(frame) = frame else {
+                    return Err(Failure::new(
+                        "offline",
+                        "Can't connect to Moby. Check your connection and try again.",
+                    ));
+                };
                 match serde_json::from_str::<AgentTurnResponse>(&frame) {
                     Ok(AgentTurnResponse::SpeechDelta { text }) => {
                         if provisional.len() < MAX_TEXT_BYTES {
@@ -371,21 +485,48 @@ impl Agent {
                 Err(frame) => {
                     // Step 1 failed: an unknown tool, an extra field, an oversized or malformed value.
                     sink.emit(UiEvent::ResetSpeech);
-                    self.audit(&env, rejected_tool(&frame), None, "rejected", None, "invalid_request");
+                    self.audit(
+                        &env,
+                        rejected_tool(&frame),
+                        None,
+                        "rejected",
+                        None,
+                        "invalid_request",
+                    );
                     sink.emit(UiEvent::Error {
-                        error: UiError { code: "invalid_tool_request".into(), message: "Moby asked for something this app doesn't allow. Nothing was run.".into() },
+                        error: UiError {
+                            code: "invalid_tool_request".into(),
+                            message:
+                                "Moby asked for something this app doesn't allow. Nothing was run."
+                                    .into(),
+                        },
                     });
                     return Ok(());
                 }
-                Ok(AgentTurnResponse::Completed { speech_text, display_text, expression_hint }) => {
-                    sink.emit(UiEvent::Completed { speech_text, display_text, expression_hint });
+                Ok(AgentTurnResponse::Completed {
+                    speech_text,
+                    display_text,
+                    expression_hint,
+                }) => {
+                    sink.emit(UiEvent::Completed {
+                        speech_text,
+                        display_text,
+                        expression_hint,
+                    });
                     return Ok(());
                 }
                 Ok(AgentTurnResponse::Error { error }) => {
-                    sink.emit(UiEvent::Error { error: UiError { code: error.code, message: error.message } });
+                    sink.emit(UiEvent::Error {
+                        error: UiError {
+                            code: error.code,
+                            message: error.message,
+                        },
+                    });
                     return Ok(());
                 }
-                Ok(AgentTurnResponse::SpeechDelta { .. }) => unreachable!("speech deltas are handled above"),
+                Ok(AgentTurnResponse::SpeechDelta { .. }) => {
+                    unreachable!("speech deltas are handled above")
+                }
                 Ok(AgentTurnResponse::ToolCall { call }) => {
                     sink.emit(UiEvent::ResetSpeech);
                     let tool = tools::tool_name(&call.request);
@@ -407,66 +548,193 @@ impl Agent {
                     rounds += 1;
                     let says = Some(text::short_line(&provisional, 300)).filter(|s| !s.is_empty());
                     let result = self.handle_call(&env, &call, says).await;
-                    let canceled = matches!(result, ToolResult::Error { code: ToolFailureCode::Canceled, .. }) && env.cancel.is_canceled();
+                    let canceled = matches!(
+                        result,
+                        ToolResult::Error {
+                            code: ToolFailureCode::Canceled,
+                            ..
+                        }
+                    ) && env.cancel.is_canceled();
                     messages.push(AgentMessage::ToolCall { call });
                     messages.push(AgentMessage::ToolResult { result });
                     if canceled {
-                        return Ok(self.stopped(&env));
+                        return self.stopped(&env);
                     }
                 }
             }
         }
     }
 
-    fn stopped(&self, env: &Env<'_>) {
-        env.sink.emit(UiEvent::Error { error: UiError { code: "canceled".into(), message: "Stopped.".into() } });
+    fn stopped(&self, env: &Env<'_>) -> Result<(), Failure> {
+        env.sink.emit(UiEvent::Error {
+            error: UiError {
+                code: "canceled".into(),
+                message: "Stopped.".into(),
+            },
+        });
+        Ok(())
     }
 
     /// Steps 2 to 7 for one valid request. Always produces a result for the model.
-    async fn handle_call(&self, env: &Env<'_>, call: &ToolCall, says: Option<String>) -> ToolResult {
+    async fn handle_call(
+        &self,
+        env: &Env<'_>,
+        call: &ToolCall,
+        says: Option<String>,
+    ) -> ToolResult {
         let tool = tools::tool_name(&call.request);
         let id = call.call_id.clone();
-        let current = |env: &Env<'_>| env.api.account_id().is_ok_and(|u| u == env.user) && env.api.epoch() == env.epoch;
+        let current = |env: &Env<'_>| {
+            env.api.account_id().is_ok_and(|u| u == env.user) && env.api.epoch() == env.epoch
+        };
         if !current(env) {
-            return self.finish(env, id, tool, tool, None, "canceled", None, Err(ToolFailureCode::Canceled));
+            return self.finish(
+                env,
+                id,
+                tool,
+                tool,
+                None,
+                "canceled",
+                None,
+                Err(ToolFailureCode::Canceled),
+            );
         }
-        let plan = tools::plan(env.store, &self.sessions, &env.user, env.epoch, &call.request, now_ms());
+        let plan = tools::plan(
+            env.store,
+            &self.sessions,
+            &env.user,
+            env.epoch,
+            &call.request,
+            now_ms(),
+        );
         let (action, decision) = match plan {
-            Plan::Refuse { code, decision, resource_id } => {
-                return self.finish(env, id, tool, tool_label(tool), resource_id.as_deref(), decision, None, Err(code));
+            Plan::Refuse {
+                code,
+                decision,
+                resource_id,
+            } => {
+                return self.finish(
+                    env,
+                    id,
+                    tool,
+                    tool_label(tool),
+                    resource_id.as_deref(),
+                    decision,
+                    None,
+                    Err(code),
+                );
             }
             Plan::Run { action, decision } => (action, decision),
-            Plan::Confirm { action, allow_session } => {
+            Plan::Confirm {
+                action,
+                allow_session,
+            } => {
                 let answer = self.ask(env, &action, allow_session, says).await;
                 let decision = match answer {
-                    Answer::Decided(Decision::Deny) => return self.finish(env, id, tool, &action.describe(), action.resource_id().as_deref(), "denied", None, Err(ToolFailureCode::Denied)),
-                    Answer::Expired => return self.finish(env, id, tool, &action.describe(), action.resource_id().as_deref(), "expired", None, Err(ToolFailureCode::Denied)),
-                    Answer::Canceled => return self.finish(env, id, tool, &action.describe(), action.resource_id().as_deref(), "canceled", None, Err(ToolFailureCode::Canceled)),
+                    Answer::Decided(Decision::Deny) => {
+                        return self.finish(
+                            env,
+                            id,
+                            tool,
+                            &action.describe(),
+                            action.resource_id().as_deref(),
+                            "denied",
+                            None,
+                            Err(ToolFailureCode::Denied),
+                        );
+                    }
+                    Answer::Expired => {
+                        return self.finish(
+                            env,
+                            id,
+                            tool,
+                            &action.describe(),
+                            action.resource_id().as_deref(),
+                            "expired",
+                            None,
+                            Err(ToolFailureCode::Denied),
+                        );
+                    }
+                    Answer::Canceled => {
+                        return self.finish(
+                            env,
+                            id,
+                            tool,
+                            &action.describe(),
+                            action.resource_id().as_deref(),
+                            "canceled",
+                            None,
+                            Err(ToolFailureCode::Canceled),
+                        );
+                    }
                     Answer::Decided(chosen) => chosen,
                 };
                 // The world may have changed while the dialog was open: another sign-in, a removed
                 // folder, a revoked grant. The approval counts only for exactly what was shown.
                 if !current(env) {
-                    return self.finish(env, id, tool, &action.describe(), action.resource_id().as_deref(), "canceled", None, Err(ToolFailureCode::Canceled));
+                    return self.finish(
+                        env,
+                        id,
+                        tool,
+                        &action.describe(),
+                        action.resource_id().as_deref(),
+                        "canceled",
+                        None,
+                        Err(ToolFailureCode::Canceled),
+                    );
                 }
-                let same = match tools::plan(env.store, &self.sessions, &env.user, env.epoch, &call.request, now_ms()) {
-                    Plan::Confirm { action: again, .. } | Plan::Run { action: again, .. } => again == action,
+                let same = match tools::plan(
+                    env.store,
+                    &self.sessions,
+                    &env.user,
+                    env.epoch,
+                    &call.request,
+                    now_ms(),
+                ) {
+                    Plan::Confirm { action: again, .. } | Plan::Run { action: again, .. } => {
+                        again == action
+                    }
                     Plan::Refuse { .. } => false,
                 };
                 if !same {
-                    return self.finish(env, id, tool, &action.describe(), action.resource_id().as_deref(), "changed", None, Err(ToolFailureCode::Unavailable));
+                    return self.finish(
+                        env,
+                        id,
+                        tool,
+                        &action.describe(),
+                        action.resource_id().as_deref(),
+                        "changed",
+                        None,
+                        Err(ToolFailureCode::Unavailable),
+                    );
                 }
                 if decision == Decision::Session
                     && let Some(key) = action.grant_key()
                 {
                     self.sessions.add(&env.user, env.epoch, action.tool(), &key);
                 }
-                (action, if decision == Decision::Session { "approved_session" } else { "approved_once" })
+                (
+                    action,
+                    if decision == Decision::Session {
+                        "approved_session"
+                    } else {
+                        "approved_once"
+                    },
+                )
             }
         };
         let started = Instant::now();
         let result = self.run(env, &action).await;
-        self.finish(env, id, tool, &action.describe(), action.resource_id().as_deref(), decision, Some(started), result)
+        self.finish(
+            env,
+            id,
+            tool,
+            &action.describe(),
+            action.resource_id().as_deref(),
+            decision,
+            Some(started),
+            result,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -488,19 +756,41 @@ impl Agent {
         self.audit(env, tool, resource, decision, started, code);
         let (outcome, note) = match &result {
             Ok(_) => ("ok", String::new()),
-            Err(code) => (tools::code_str(*code), tools::failure_text(*code).to_owned()),
+            Err(code) => (
+                tools::code_str(*code),
+                tools::failure_text(*code).to_owned(),
+            ),
         };
-        env.sink.emit(UiEvent::ToolResult { tool, description: text::short_line(description, 160), outcome, note });
+        env.sink.emit(UiEvent::ToolResult {
+            tool,
+            description: text::short_line(description, 160),
+            outcome,
+            note,
+        });
         match result {
             Ok(output) => ToolResult::Ok { call_id, output },
             Err(code) => ToolResult::Error { call_id, code },
         }
     }
 
-    async fn ask(&self, env: &Env<'_>, action: &Action, allow_session: bool, says: Option<String>) -> Answer {
+    async fn ask(
+        &self,
+        env: &Env<'_>,
+        action: &Action,
+        allow_session: bool,
+        says: Option<String>,
+    ) -> Answer {
         let approval_id = format!("apr_{}", Uuid::new_v4().hyphenated());
         let (tx, rx) = oneshot::channel();
-        self.pending().insert(approval_id.clone(), Pending { user: env.user.clone(), epoch: env.epoch, allow_session, tx });
+        self.pending().insert(
+            approval_id.clone(),
+            Pending {
+                user: env.user.clone(),
+                epoch: env.epoch,
+                allow_session,
+                tx,
+            },
+        );
         env.sink.emit(UiEvent::ApprovalRequired {
             approval_id: approval_id.clone(),
             tool: action.tool(),
@@ -537,7 +827,9 @@ impl Agent {
         let stop = Arc::new(AtomicBool::new(false));
         let started = Instant::now();
         let (work, flag, limit) = (action.clone(), Arc::clone(&stop), self.tool_timeout);
-        let mut task = tokio::task::spawn_blocking(move || tools::execute_blocking(&work, &flag, started, limit));
+        let mut task = tokio::task::spawn_blocking(move || {
+            tools::execute_blocking(&work, &flag, started, limit)
+        });
         tokio::select! {
             done = &mut task => done.unwrap_or(Err(ToolFailureCode::Failed)),
             () = tokio::time::sleep(self.tool_timeout) => { stop.store(true, Ordering::SeqCst); Err(ToolFailureCode::Timeout) }
@@ -564,7 +856,9 @@ fn tool_label(tool: &str) -> &'static str {
 
 /// The tool name of a rejected frame, for the activity log, if it is one we know. Never anything else.
 fn rejected_tool(frame: &str) -> &'static str {
-    let name = serde_json::from_str::<serde_json::Value>(frame).ok().and_then(|v| v["call"]["request"]["tool"].as_str().map(str::to_owned));
+    let name = serde_json::from_str::<serde_json::Value>(frame)
+        .ok()
+        .and_then(|v| v["call"]["request"]["tool"].as_str().map(str::to_owned));
     match name.as_deref() {
         Some("git_status") => "git_status",
         Some("open_app") => "open_app",
@@ -588,7 +882,12 @@ pub async fn agent_turn(
 
 /// Answers a dialog that the app opened. The id comes from an `approval_required` event.
 #[tauri::command]
-pub async fn answer_approval(api: State<'_, Api>, agent: State<'_, Agent>, approval_id: String, decision: Decision) -> Result<(), Failure> {
+pub async fn answer_approval(
+    api: State<'_, Api>,
+    agent: State<'_, Agent>,
+    approval_id: String,
+    decision: Decision,
+) -> Result<(), Failure> {
     let user = api.account_id()?;
     agent.answer(&user, api.epoch(), &approval_id, decision)
 }

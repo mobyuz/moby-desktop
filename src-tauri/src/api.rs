@@ -532,7 +532,9 @@ pub async fn export_account(app: AppHandle, api: State<'_, Api>) -> Result<Strin
 
 /// Opens the event stream for one agent request. Used by `agent.rs`, which owns the turn.
 pub(crate) async fn open_agent_stream(api: &Api, request: &Value) -> Result<Response, Failure> {
-    let response = api.send(Method::POST, "/v1/agent/turn", Some(request)).await?;
+    let response = api
+        .send(Method::POST, "/v1/agent/turn", Some(request))
+        .await?;
     if !response.status().is_success() {
         return Err(failure_from(response).await);
     }
@@ -550,7 +552,10 @@ pub(crate) struct Frames {
 impl Frames {
     pub(crate) fn new(response: Response) -> Self {
         Self {
-            stream: response.bytes_stream().map(|chunk| chunk.map(|bytes| bytes.to_vec()).map_err(|_| ())).boxed(),
+            stream: response
+                .bytes_stream()
+                .map(|chunk| chunk.map(|bytes| bytes.to_vec()).map_err(|_| ()))
+                .boxed(),
             buffer: String::new(),
             pending: Vec::new(),
             ready: std::collections::VecDeque::new(),
@@ -563,14 +568,19 @@ impl Frames {
             if let Some(frame) = self.ready.pop_front() {
                 return Ok(Some(frame));
             }
-            let Some(chunk) = self.stream.next().await else { return Ok(None) };
-            self.pending.extend_from_slice(&chunk.map_err(|_| Failure::offline())?);
+            let Some(chunk) = self.stream.next().await else {
+                return Ok(None);
+            };
+            self.pending
+                .extend_from_slice(&chunk.map_err(|_| Failure::offline())?);
             // A chunk can end inside a multi-byte character, so only complete text moves on.
             let valid = match std::str::from_utf8(&self.pending) {
                 Ok(text) => text.len(),
                 Err(error) => error.valid_up_to(),
             };
-            self.buffer.push_str(std::str::from_utf8(&self.pending[..valid]).map_err(|_| Failure::unexpected())?);
+            self.buffer.push_str(
+                std::str::from_utf8(&self.pending[..valid]).map_err(|_| Failure::unexpected())?,
+            );
             self.pending.drain(..valid);
             self.ready.extend(drain_frames(&mut self.buffer));
         }

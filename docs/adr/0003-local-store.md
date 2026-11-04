@@ -8,7 +8,7 @@ Conversations lived in React memory and were lost on restart, and preferences sa
 
 ## Decisions
 
-- **SQLite, owned by Rust.** One file, `moby.db`, in the app data folder (`%APPDATA%\uz.moby.desktop`). Only `src-tauri/src/store.rs` opens it. The webview calls nine narrow commands and never sees SQL, the path, or another account's rows. No filesystem or SQL plugin is added and the capability set stays empty.
+- **SQLite, owned by Rust.** One file, `moby.db`, in the local app data folder (`%LOCALAPPDATA%\uz.moby.desktop`, Tauri's `app_local_data_dir`). The owner decided that history stays on this computer, so it must not roam with a Windows profile; D5 moved it here from `%APPDATA%` and moves an older file once at startup. Only `src-tauri/src/store.rs` opens it. The webview calls nine narrow commands and never sees SQL, the path, or another account's rows. No filesystem or SQL plugin is added and the capability set stays empty.
 - **`rusqlite` with bundled SQLite, pinned exactly** (`=0.41.1`, with SQLite compiled in by `libsqlite3-sys`). The app then does not depend on the SQLite that happens to be on the computer, and a bundled upgrade is a reviewed change.
 - **Versioned migrations.** `PRAGMA user_version` records the step. Each step runs in its own transaction, a failed step leaves the file at the previous version, and a file from a newer app is refused instead of opened. Version 1 creates `settings`, `conversations`, `messages`, `projects`, `allowed_apps`, `grants`, `reminders`, `audit_log`, and `devices`. Only the first three have behaviour. `devices` holds the id and name; the `pair_key` is not in the database.
 - **Accounts.** Rows that belong to an account carry `user_id`. Rust takes it from the profile the API client received and clears it on sign-out or when the session ends, so the webview cannot ask for another account's history. Settings, retention, and delete-all are per computer. Signing out keeps the file.
@@ -48,6 +48,9 @@ Decided 2026-11-04 by the project owner (open decision 9 in the plan): the file 
 
 ## Open
 
-1. **Account deletion.** Deleting the account on the server does not delete that account's local history. Retention or **Delete all history** removes it. Decide whether account deletion should offer to remove it too.
-2. **Roaming.** `%APPDATA%` is the roaming profile. On a domain with profile roaming the history file would travel with it, so `%LOCALAPPDATA%` may suit better.
-3. **Activity log.** The table exists and retention and delete-all cover it, but nothing writes to it and its clear button is a placeholder until tools arrive.
+Resolved in D5 (see [ADR 0005](0005-local-tools.md)):
+
+1. **Account deletion** now deletes that account's local data (history, folders, programs, grants, reminders, activity) after the server confirms.
+2. **Roaming**: the file lives in `%LOCALAPPDATA%`.
+3. **Activity log**: tool calls write to it (metadata only) and the clear button deletes the signed-in account's entries.
+4. **Delete all history** removes the conversations and activity of every account on this Windows user, and the interface says so. Registered folders, programs and reminders stay.

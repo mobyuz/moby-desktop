@@ -18,14 +18,25 @@ const TICK: Duration = Duration::from_secs(15);
 pub const GRACE_MS: i64 = 60_000;
 
 /// Shows every reminder that is due for `user`, once each. Returns how many were shown.
-pub(crate) fn fire_due(db: &Db, user: &str, now: i64, show: &mut dyn FnMut(&str)) -> Result<usize, StoreError> {
+pub(crate) fn fire_due(
+    db: &Db,
+    user: &str,
+    now: i64,
+    show: &mut dyn FnMut(&str),
+) -> Result<usize, StoreError> {
     let mut shown = 0;
     for reminder in db.due_reminders(user, now)? {
         // Marking first means a crash between the two steps loses a reminder instead of repeating it.
         if db.finish_reminder(user, &reminder.id, now)? {
             show(&reminder.text);
             shown += 1;
-            let record = AuditRecord { tool: "reminder_due", resource_id: None, decision: "scheduled", duration_ms: None, result_code: Some("ok") };
+            let record = AuditRecord {
+                tool: "reminder_due",
+                resource_id: None,
+                decision: "scheduled",
+                duration_ms: None,
+                result_code: Some("ok"),
+            };
             let _ = db.audit_add(user, &record, now);
         }
     }
@@ -51,7 +62,12 @@ pub fn start(app: AppHandle) {
             }
             let _ = store.with(|db| {
                 fire_due(db, &user, now, &mut |text| {
-                    let _ = app.notification().builder().title("Moby reminder").body(text).show();
+                    let _ = app
+                        .notification()
+                        .builder()
+                        .title("Moby reminder")
+                        .body(text)
+                        .show();
                 })
             });
         }
@@ -69,16 +85,34 @@ mod tests {
     fn a_due_reminder_is_shown_once_and_only_for_its_account() {
         let scratch = Scratch::new();
         let mut db = Db::open(&scratch.path("moby.db"), NOW).unwrap();
-        db.add_reminder("alice", "stand up", NOW + 1000, NOW).unwrap();
-        db.add_reminder("alice", "later", NOW + 100_000, NOW).unwrap();
-        db.add_reminder("bob", "not alice", NOW + 1000, NOW).unwrap();
+        db.add_reminder("alice", "stand up", NOW + 1000, NOW)
+            .unwrap();
+        db.add_reminder("alice", "later", NOW + 100_000, NOW)
+            .unwrap();
+        db.add_reminder("bob", "not alice", NOW + 1000, NOW)
+            .unwrap();
         let mut shown = Vec::new();
-        assert_eq!(fire_due(&db, "alice", NOW, &mut |t| shown.push(t.to_owned())).unwrap(), 0);
-        assert_eq!(fire_due(&db, "alice", NOW + 2000, &mut |t| shown.push(t.to_owned())).unwrap(), 1);
-        assert_eq!(fire_due(&db, "alice", NOW + 3000, &mut |t| shown.push(t.to_owned())).unwrap(), 0, "never twice");
+        assert_eq!(
+            fire_due(&db, "alice", NOW, &mut |t| shown.push(t.to_owned())).unwrap(),
+            0
+        );
+        assert_eq!(
+            fire_due(&db, "alice", NOW + 2000, &mut |t| shown.push(t.to_owned())).unwrap(),
+            1
+        );
+        assert_eq!(
+            fire_due(&db, "alice", NOW + 3000, &mut |t| shown.push(t.to_owned())).unwrap(),
+            0,
+            "never twice"
+        );
         assert_eq!(shown, ["stand up"]);
         assert_eq!(db.reminders("bob").unwrap()[0].state, "pending");
-        let states: Vec<_> = db.reminders("alice").unwrap().into_iter().map(|r| r.state).collect();
+        let states: Vec<_> = db
+            .reminders("alice")
+            .unwrap()
+            .into_iter()
+            .map(|r| r.state)
+            .collect();
         assert_eq!(states, ["done", "pending"]);
     }
 
@@ -86,13 +120,20 @@ mod tests {
     fn reminders_that_came_due_while_closed_show_as_missed_not_as_notifications() {
         let scratch = Scratch::new();
         let mut db = Db::open(&scratch.path("moby.db"), NOW).unwrap();
-        db.add_reminder("alice", "while closed", NOW - 3_600_000, NOW - 4_000_000).unwrap();
-        db.add_reminder("alice", "just now", NOW - 5_000, NOW - 10_000).unwrap();
+        db.add_reminder("alice", "while closed", NOW - 3_600_000, NOW - 4_000_000)
+            .unwrap();
+        db.add_reminder("alice", "just now", NOW - 5_000, NOW - 10_000)
+            .unwrap();
         assert_eq!(db.mark_missed("alice", NOW - GRACE_MS).unwrap(), 1);
         let mut shown = Vec::new();
         fire_due(&db, "alice", NOW, &mut |t| shown.push(t.to_owned())).unwrap();
         assert_eq!(shown, ["just now"]);
-        let states: Vec<_> = db.reminders("alice").unwrap().into_iter().map(|r| (r.text, r.state)).collect();
+        let states: Vec<_> = db
+            .reminders("alice")
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.text, r.state))
+            .collect();
         assert_eq!(states[0], ("while closed".to_owned(), "missed".to_owned()));
     }
 }

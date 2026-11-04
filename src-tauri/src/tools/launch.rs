@@ -23,7 +23,9 @@ const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
 fn code_for(error: PathError) -> ToolFailureCode {
     match error {
-        PathError::Missing | PathError::Changed | PathError::Reparse | PathError::WrongKind => ToolFailureCode::Unavailable,
+        PathError::Missing | PathError::Changed | PathError::Reparse | PathError::WrongKind => {
+            ToolFailureCode::Unavailable
+        }
         _ => ToolFailureCode::InvalidRequest,
     }
 }
@@ -33,7 +35,10 @@ fn start(stored: &str, folder: Option<&VerifiedDir>) -> Result<(), ToolFailureCo
     let mut command = Command::new(program.os());
     if let Some(folder) = folder {
         let arg = folder.path.as_str();
-        if arg.starts_with('-') || paths::check_form(arg).is_err() || !arg.as_bytes().get(1).is_some_and(|b| *b == b':') {
+        if arg.starts_with('-')
+            || paths::check_form(arg).is_err()
+            || !arg.as_bytes().get(1).is_some_and(|b| *b == b':')
+        {
             return Err(ToolFailureCode::InvalidRequest);
         }
         command.arg(arg);
@@ -44,7 +49,10 @@ fn start(stored: &str, folder: Option<&VerifiedDir>) -> Result<(), ToolFailureCo
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-    command.spawn().map(drop).map_err(|_| ToolFailureCode::Failed)
+    command
+        .spawn()
+        .map(drop)
+        .map_err(|_| ToolFailureCode::Failed)
 }
 
 /// Starts a registered program with no arguments.
@@ -58,7 +66,9 @@ pub fn open_project(stored_exe: Option<&str>, folder: &VerifiedDir) -> Result<()
         Some(exe) => start(exe, Some(folder)),
         None => {
             let root = std::env::var("SystemRoot").map_err(|_| ToolFailureCode::Unavailable)?;
-            let explorer = paths::canonical_of(&format!("{}\\explorer.exe", root.trim_end_matches('\\'))).map_err(code_for)?;
+            let explorer =
+                paths::canonical_of(&format!("{}\\explorer.exe", root.trim_end_matches('\\')))
+                    .map_err(code_for)?;
             start(&explorer, Some(folder))
         }
     }
@@ -99,7 +109,10 @@ mod tests {
         let exe = installed(&scratch, "tool.exe");
         let registered = paths::register_program(&exe).unwrap();
         open_app(&registered.path).unwrap();
-        assert!(ran(&exe), "the harmless helper should have written its marker");
+        assert!(
+            ran(&exe),
+            "the harmless helper should have written its marker"
+        );
     }
 
     #[test]
@@ -107,8 +120,14 @@ mod tests {
         let scratch = Scratch::new();
         let marker = scratch.path("pwned.txt");
         for (name, body) in [
-            ("a.bat", format!("@echo off\r\necho x> \"{}\"\r\n", marker.display())),
-            ("a.cmd", format!("@echo off\r\necho x> \"{}\"\r\n", marker.display())),
+            (
+                "a.bat",
+                format!("@echo off\r\necho x> \"{}\"\r\n", marker.display()),
+            ),
+            (
+                "a.cmd",
+                format!("@echo off\r\necho x> \"{}\"\r\n", marker.display()),
+            ),
             ("a.ps1", format!("Set-Content \"{}\" x", marker.display())),
         ] {
             let path = scratch.file(name, body.as_bytes());
@@ -120,7 +139,15 @@ mod tests {
         // Registered as a real program, then replaced by a script with the same name.
         let exe = installed(&scratch, "swap.exe");
         let registered = paths::register_program(&exe).unwrap();
-        std::fs::write(&exe, format!("@echo off\r\necho x> \"{}\"\r\n{}", marker.display(), " ".repeat(100))).unwrap();
+        std::fs::write(
+            &exe,
+            format!(
+                "@echo off\r\necho x> \"{}\"\r\n{}",
+                marker.display(),
+                " ".repeat(100)
+            ),
+        )
+        .unwrap();
         assert!(open_app(&registered.path).is_err());
         std::thread::sleep(Duration::from_millis(500));
         assert!(!marker.exists());
@@ -132,7 +159,15 @@ mod tests {
         let exe = installed(&scratch, "gone.exe");
         std::fs::remove_file(&exe).unwrap();
         assert_eq!(open_app(&exe), Err(ToolFailureCode::Unavailable));
-        for bad in [r"\\server\share\x.exe", r"C:\x\..\y.exe", "relative.exe", r"C:\x\nul.exe", r"C:\x\a.exe:stream", "cmd.exe", ""] {
+        for bad in [
+            r"\\server\share\x.exe",
+            r"C:\x\..\y.exe",
+            "relative.exe",
+            r"C:\x\nul.exe",
+            r"C:\x\a.exe:stream",
+            "cmd.exe",
+            "",
+        ] {
             assert!(open_app(bad).is_err(), "{bad}");
         }
     }
@@ -143,14 +178,31 @@ mod tests {
         let exe = installed(&scratch, "ide.exe");
         let folder = scratch.dir("-dash project");
         let verified = paths::register_dir(folder.to_str().unwrap()).unwrap();
-        open_project(Some(&paths::register_program(&exe).unwrap().path), &verified).unwrap();
+        open_project(
+            Some(&paths::register_program(&exe).unwrap().path),
+            &verified,
+        )
+        .unwrap();
         assert!(ran(&exe));
-        assert_eq!(std::fs::read_to_string(format!("{exe}.ran")).unwrap(), verified.path, "exactly the canonical folder, nothing else");
-        assert!(verified.path.as_bytes()[1] == b':', "the argument starts with a drive, never a dash");
+        assert_eq!(
+            std::fs::read_to_string(format!("{exe}.ran")).unwrap(),
+            verified.path,
+            "exactly the canonical folder, nothing else"
+        );
+        assert!(
+            verified.path.as_bytes()[1] == b':',
+            "the argument starts with a drive, never a dash"
+        );
         let dashed = VerifiedDir { path: "-rf".into() };
-        assert_eq!(open_project(Some(&exe), &dashed), Err(ToolFailureCode::InvalidRequest));
+        assert_eq!(
+            open_project(Some(&exe), &dashed),
+            Err(ToolFailureCode::InvalidRequest)
+        );
         let second = installed(&scratch, "ide2.exe");
-        assert_eq!(open_project(Some(&second), &dashed), Err(ToolFailureCode::InvalidRequest));
+        assert_eq!(
+            open_project(Some(&second), &dashed),
+            Err(ToolFailureCode::InvalidRequest)
+        );
         assert!(not_ran(&second));
     }
 }
