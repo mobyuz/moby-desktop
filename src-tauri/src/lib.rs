@@ -1,7 +1,11 @@
 use tauri::Manager;
 
 mod api;
+mod paths;
+mod registry;
 mod store;
+mod text;
+mod tools;
 
 /// Starts the app. Only one instance runs; a second launch focuses the first window.
 pub fn run() {

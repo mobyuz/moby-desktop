@@ -17,7 +17,13 @@ use uuid::Uuid;
 use crate::api::{Api, Failure};
 
 const DB_FILE: &str = "moby.db";
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_initial.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_initial.sql"),
+    include_str!("../migrations/0002_tools.sql"),
+];
+
+/// Tables whose rows belong to one account.
+const ACCOUNT_TABLES: [&str; 6] = ["conversations", "projects", "allowed_apps", "grants", "reminders", "audit_log"];
 
 const LANGUAGES: [&str; 3] = ["uz", "ru", "en"];
 const ROLES: [&str; 2] = ["user", "moby"];
@@ -31,10 +37,12 @@ const LOAD_LIMIT: i64 = 500;
 const DAY_MS: i64 = 86_400_000;
 
 #[derive(Debug)]
-enum StoreError {
+pub(crate) enum StoreError {
     Unavailable,
     Invalid(&'static str),
     NotFound,
+    /// A per-account limit that keeps the lists Moby sends and shows small.
+    Full(&'static str),
     Database(rusqlite::Error),
 }
 
@@ -54,9 +62,8 @@ impl From<StoreError> for Failure {
             StoreError::Invalid(what) => {
                 Failure::new("invalid_input", &format!("That {what} isn't valid."))
             }
-            StoreError::NotFound => {
-                Failure::new("not_found", "That conversation is no longer here.")
-            }
+            StoreError::NotFound => Failure::new("not_found", "That item is no longer here."),
+            StoreError::Full(what) => Failure::new("limit_reached", &format!("There are already as many {what} as Moby allows.")),
             StoreError::Database(error) => {
                 // SQLite messages name tables and columns, never the stored values.
                 eprintln!("moby: history database error: {error}");
@@ -78,7 +85,7 @@ pub struct Settings {
 
 #[derive(Debug, PartialEq, Serialize)]
 pub struct ConversationSummary {
-    id: String,
+    pub(crate) id: String,
     title: String,
     updated_at: i64,
 }
@@ -90,7 +97,14 @@ pub struct StoredMessage {
     text: String,
 }
 
-fn now_ms() -> i64 {
+#[cfg(test)]
+impl StoredMessage {
+    pub(crate) fn for_test(text: &str) -> Self {
+        Self { id: Uuid::new_v4().hyphenated().to_string(), role: "user".into(), text: text.into() }
+    }
+}
+
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| {
@@ -107,7 +121,7 @@ pub fn is_account_id(value: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-fn check_account(value: &str) -> Result<(), StoreError> {
+pub(crate) fn check_account(value: &str) -> Result<(), StoreError> {
     if is_account_id(value) {
         Ok(())
     } else {
@@ -116,7 +130,7 @@ fn check_account(value: &str) -> Result<(), StoreError> {
 }
 
 /// Only canonical lowercase UUIDs, the form `crypto.randomUUID()` and this module produce.
-fn check_id(value: &str) -> Result<(), StoreError> {
+pub(crate) fn check_id(value: &str) -> Result<(), StoreError> {
     match Uuid::parse_str(value) {
         Ok(parsed) if parsed.hyphenated().to_string() == value => Ok(()),
         _ => Err(StoreError::Invalid("id")),
@@ -159,13 +173,13 @@ fn migrate(conn: &mut Connection, steps: &[&str]) -> Result<(), StoreError> {
     Ok(())
 }
 
-struct Db {
-    conn: Connection,
+pub(crate) struct Db {
+    pub(crate) conn: Connection,
 }
 
 impl Db {
     /// Opens the file, brings the schema up to date, and applies retention.
-    fn open(path: &Path, now: i64) -> Result<Self, StoreError> {
+    pub(crate) fn open(path: &Path, now: i64) -> Result<Self, StoreError> {
         let mut conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.pragma_update(None, "foreign_keys", true)?;
@@ -177,7 +191,7 @@ impl Db {
         Ok(db)
     }
 
-    fn settings(&self) -> Result<Settings, StoreError> {
+    pub(crate) fn settings(&self) -> Result<Settings, StoreError> {
         Ok(self.conn.query_row(
             "SELECT language, retention_days FROM settings WHERE id = 1",
             [],
@@ -240,7 +254,7 @@ impl Db {
             .ok_or(StoreError::NotFound)
     }
 
-    fn create_conversation(
+    pub(crate) fn create_conversation(
         &self,
         user: &str,
         title: &str,
@@ -293,7 +307,7 @@ impl Db {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    fn append_message(
+    pub(crate) fn append_message(
         &mut self,
         user: &str,
         conversation_id: &str,
@@ -338,7 +352,7 @@ impl Db {
 
     /// Removes every conversation, message and audit entry of every account on this computer.
     /// Settings stay. VACUUM then rebuilds the file so it also shrinks.
-    fn delete_all_history(&mut self) -> Result<(), StoreError> {
+    pub(crate) fn delete_all_history(&mut self) -> Result<(), StoreError> {
         let tx = self.conn.transaction()?;
         tx.execute_batch(
             "DELETE FROM messages; DELETE FROM conversations; DELETE FROM audit_log;",
@@ -347,6 +361,41 @@ impl Db {
         self.conn.execute_batch("VACUUM")?;
         Ok(())
     }
+
+    /// Removes everything one account owns: conversations and messages, registered folders and
+    /// programs, grants, reminders and the activity log. Settings stay. The account is already
+    /// gone on the server by the time this runs.
+    pub(crate) fn delete_account_data(&mut self, user: &str) -> Result<(), StoreError> {
+        check_account(user)?;
+        let tx = self.conn.transaction()?;
+        for table in ACCOUNT_TABLES {
+            tx.execute(&format!("DELETE FROM {table} WHERE user_id = ?1"), params![user])?;
+        }
+        tx.commit()?;
+        self.conn.execute_batch("VACUUM")?;
+        Ok(())
+    }
+}
+
+/// Moves the history file from the old roaming folder to the local one, once. History stays on
+/// this computer, so it must not follow a roaming profile. Returns whether a file was moved.
+pub fn move_legacy_file(old_dir: &Path, new_dir: &Path) -> std::io::Result<bool> {
+    let old = old_dir.join(DB_FILE);
+    let new = new_dir.join(DB_FILE);
+    if old == new || !old.is_file() || new.exists() {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(new_dir)?;
+    if std::fs::rename(&old, &new).is_err() {
+        std::fs::copy(&old, &new)?;
+        std::fs::remove_file(&old)?;
+    }
+    // A rollback journal only exists after a crash; it belongs to the file that just moved.
+    let journal = old_dir.join(format!("{DB_FILE}-journal"));
+    if journal.is_file() {
+        let _ = std::fs::rename(&journal, new_dir.join(format!("{DB_FILE}-journal")));
+    }
+    Ok(true)
 }
 
 /// The open database, or nothing when it could not be opened.
@@ -369,7 +418,7 @@ impl Store {
         }
     }
 
-    fn with<T>(&self, run: impl FnOnce(&mut Db) -> Result<T, StoreError>) -> Result<T, Failure> {
+    pub(crate) fn with<T>(&self, run: impl FnOnce(&mut Db) -> Result<T, StoreError>) -> Result<T, Failure> {
         let db = self.db.as_ref().ok_or(StoreError::Unavailable)?;
         // A panic while the lock was held leaves the SQLite file consistent, so keep going.
         let mut db = db.lock().unwrap_or_else(PoisonError::into_inner);
