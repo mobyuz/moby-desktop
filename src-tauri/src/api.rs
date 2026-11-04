@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -11,10 +12,10 @@ use reqwest::{Client, Method, Response, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tauri::async_runtime::Mutex;
-use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 
-use crate::store::is_account_id;
+use crate::agent::Agent;
+use crate::store::{Store, is_account_id};
 
 const DEFAULT_API_URL: &str = "http://127.0.0.1:8080";
 const TERMS_VERSION: &str = match option_env!("MOBY_TERMS_VERSION") {
@@ -116,7 +117,7 @@ fn parse_base_url(value: &str) -> Option<String> {
 }
 
 /// Takes every complete SSE frame off the buffer and returns its data.
-fn drain_frames(buffer: &mut String) -> Vec<String> {
+pub(crate) fn drain_frames(buffer: &mut String) -> Vec<String> {
     let mut frames = Vec::new();
     while let Some(end) = buffer.find("\n\n") {
         let frame: String = buffer.drain(..end + 2).collect();
@@ -130,13 +131,6 @@ fn drain_frames(buffer: &mut String) -> Vec<String> {
         }
     }
     frames
-}
-
-fn is_terminal(event: &Value) -> bool {
-    matches!(
-        event["event"].as_str(),
-        Some("completed" | "tool_call" | "error")
-    )
 }
 
 /// The account id in a profile, if it is safe to use as a key for local history.
@@ -175,6 +169,9 @@ pub struct Api {
     access: Mutex<Option<String>>,
     /// Id of the signed-in account. Local history is filed under it, and the webview cannot change it.
     account: StdMutex<Option<String>>,
+    /// Changes whenever the signed-in account changes or signs out. Approvals and session grants
+    /// record it, so none of them survives a sign-out.
+    epoch: AtomicU64,
 }
 
 impl Api {
@@ -184,6 +181,10 @@ impl Api {
             .as_deref()
             .or(option_env!("MOBY_API_URL"))
             .unwrap_or(DEFAULT_API_URL);
+        Self::new_with(value)
+    }
+
+    fn new_with(value: &str) -> Self {
         let base =
             parse_base_url(value).expect("MOBY_API_URL must be https, or http on this computer");
         let http = Client::builder()
@@ -196,11 +197,29 @@ impl Api {
             base,
             access: Mutex::new(None),
             account: StdMutex::new(None),
+            epoch: AtomicU64::new(1),
         }
     }
 
-    fn set_account(&self, account: Option<String>) {
-        *self.account.lock().unwrap_or_else(|e| e.into_inner()) = account;
+    pub(crate) fn set_account(&self, account: Option<String>) {
+        let mut current = self.account.lock().unwrap_or_else(|e| e.into_inner());
+        if *current != account {
+            self.epoch.fetch_add(1, Ordering::SeqCst);
+        }
+        *current = account;
+    }
+
+    pub(crate) fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::SeqCst)
+    }
+
+    /// A client that is already signed in, for tests that talk to a stub server.
+    #[cfg(test)]
+    pub(crate) fn signed_in_for_test(base: &str, account: &str) -> Self {
+        let api = Self::new_with(base);
+        api.set_account(Some(account.to_owned()));
+        *api.access.try_lock().expect("fresh client") = Some("test-token".to_owned());
+        api
     }
 
     /// Remembers who is signed in, from the profile the server returned.
@@ -390,7 +409,8 @@ pub async fn forgot_password(api: State<'_, Api>, email: String) -> Result<(), F
 }
 
 #[tauri::command]
-pub async fn sign_out(api: State<'_, Api>) -> Result<(), Failure> {
+pub async fn sign_out(api: State<'_, Api>, agent: State<'_, Agent>) -> Result<(), Failure> {
+    agent.end_session();
     if let Some(refresh_token) = vault_get(REFRESH_TOKEN)? {
         // Signing out locally still works offline; the server session then expires on its own.
         let _ = api
@@ -438,7 +458,13 @@ pub async fn update_profile(
 
 /// Refreshes first and then sends once: here a 401 means a wrong password, not an expired token.
 #[tauri::command]
-pub async fn delete_account(api: State<'_, Api>, password: String) -> Result<(), Failure> {
+pub async fn delete_account(
+    api: State<'_, Api>,
+    store: State<'_, Store>,
+    agent: State<'_, Agent>,
+    password: String,
+) -> Result<(), Failure> {
+    let account = api.account_id()?;
     let check = api.send(Method::GET, "/v1/me", None).await?;
     if !check.status().is_success() {
         return Err(failure_from(check).await);
@@ -462,7 +488,17 @@ pub async fn delete_account(api: State<'_, Api>, password: String) -> Result<(),
     if !response.status().is_success() {
         return Err(failure_from(response).await);
     }
-    api.forget_session().await
+    // The server has confirmed, so this account's history, registered folders, grants, reminders
+    // and activity go too. The session ends either way.
+    agent.end_session();
+    let cleaned = store.with(|db| db.delete_account_data(&account));
+    api.forget_session().await?;
+    cleaned.map_err(|_| {
+        Failure::new(
+            "history_not_deleted",
+            "Your account was deleted, but Moby couldn't remove its data from this computer. Use Settings to delete all history.",
+        )
+    })
 }
 
 fn free_export_path(folder: PathBuf) -> PathBuf {
@@ -494,41 +530,51 @@ pub async fn export_account(app: AppHandle, api: State<'_, Api>) -> Result<Strin
     Ok(path.display().to_string())
 }
 
-/// Runs one agent turn and forwards each stream event to the webview. Returns after the terminal event.
-#[tauri::command]
-pub async fn agent_turn(
-    api: State<'_, Api>,
-    request: Value,
-    on_event: Channel<Value>,
-) -> Result<(), Failure> {
-    let response = api
-        .send(Method::POST, "/v1/agent/turn", Some(&request))
-        .await?;
+/// Opens the event stream for one agent request. Used by `agent.rs`, which owns the turn.
+pub(crate) async fn open_agent_stream(api: &Api, request: &Value) -> Result<Response, Failure> {
+    let response = api.send(Method::POST, "/v1/agent/turn", Some(request)).await?;
     if !response.status().is_success() {
         return Err(failure_from(response).await);
     }
-    let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
-    let mut pending = Vec::new();
-    while let Some(chunk) = stream.next().await {
-        pending.extend_from_slice(&chunk.map_err(|_| Failure::offline())?);
-        // A chunk can end inside a multi-byte character, so only complete text moves on.
-        let valid = match std::str::from_utf8(&pending) {
-            Ok(text) => text.len(),
-            Err(error) => error.valid_up_to(),
-        };
-        buffer.push_str(std::str::from_utf8(&pending[..valid]).map_err(|_| Failure::unexpected())?);
-        pending.drain(..valid);
-        for data in drain_frames(&mut buffer) {
-            let event: Value = serde_json::from_str(&data).map_err(|_| Failure::unexpected())?;
-            let terminal = is_terminal(&event);
-            on_event.send(event).map_err(|_| Failure::unexpected())?;
-            if terminal {
-                return Ok(());
-            }
+    Ok(response)
+}
+
+/// Splits a response body into server-sent event payloads.
+pub(crate) struct Frames {
+    stream: futures_util::stream::BoxStream<'static, Result<Vec<u8>, ()>>,
+    buffer: String,
+    pending: Vec<u8>,
+    ready: std::collections::VecDeque<String>,
+}
+
+impl Frames {
+    pub(crate) fn new(response: Response) -> Self {
+        Self {
+            stream: response.bytes_stream().map(|chunk| chunk.map(|bytes| bytes.to_vec()).map_err(|_| ())).boxed(),
+            buffer: String::new(),
+            pending: Vec::new(),
+            ready: std::collections::VecDeque::new(),
         }
     }
-    Err(Failure::offline())
+
+    /// The next payload, or `None` when the server closed the stream.
+    pub(crate) async fn next(&mut self) -> Result<Option<String>, Failure> {
+        loop {
+            if let Some(frame) = self.ready.pop_front() {
+                return Ok(Some(frame));
+            }
+            let Some(chunk) = self.stream.next().await else { return Ok(None) };
+            self.pending.extend_from_slice(&chunk.map_err(|_| Failure::offline())?);
+            // A chunk can end inside a multi-byte character, so only complete text moves on.
+            let valid = match std::str::from_utf8(&self.pending) {
+                Ok(text) => text.len(),
+                Err(error) => error.valid_up_to(),
+            };
+            self.buffer.push_str(std::str::from_utf8(&self.pending[..valid]).map_err(|_| Failure::unexpected())?);
+            self.pending.drain(..valid);
+            self.ready.extend(drain_frames(&mut self.buffer));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -564,14 +610,6 @@ mod tests {
     fn ignores_frames_without_data() {
         let mut buffer = ": keep-alive\n\nevent: x\ndata: 1\n\n".to_owned();
         assert_eq!(drain_frames(&mut buffer), vec!["1"]);
-    }
-
-    #[test]
-    fn stops_on_terminal_events_only() {
-        assert!(is_terminal(&json!({ "event": "completed" })));
-        assert!(is_terminal(&json!({ "event": "tool_call" })));
-        assert!(is_terminal(&json!({ "event": "error" })));
-        assert!(!is_terminal(&json!({ "event": "speech_delta" })));
     }
 
     #[test]

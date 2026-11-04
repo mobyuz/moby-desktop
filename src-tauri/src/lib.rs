@@ -1,8 +1,12 @@
 use tauri::Manager;
 
+mod agent;
 mod api;
+mod commands;
+mod grants;
 mod paths;
 mod registry;
+mod scheduler;
 mod store;
 mod text;
 mod tools;
@@ -16,11 +20,21 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        // Used from Rust only (scheduler.rs). The capability set stays empty, so the webview cannot call it.
+        .plugin(tauri_plugin_notification::init())
         .manage(api::Api::new())
+        .manage(agent::Agent::new())
         .setup(|app| {
-            // %APPDATA%\uz.moby.desktop. If the file cannot be opened the app still starts, without saving.
-            let dir = app.path().app_data_dir()?;
+            // %LOCALAPPDATA%\uz.moby.desktop: history stays on this computer and does not roam.
+            // If the file cannot be opened the app still starts, without saving.
+            let dir = app.path().app_local_data_dir()?;
+            if let Ok(old) = app.path().app_data_dir()
+                && let Err(error) = store::move_legacy_file(&old, &dir)
+            {
+                eprintln!("moby: could not move the history file to the local folder: {error}");
+            }
             app.manage(store::Store::open(&dir));
+            scheduler::start(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -35,7 +49,21 @@ pub fn run() {
             api::update_profile,
             api::delete_account,
             api::export_account,
-            api::agent_turn,
+            agent::agent_turn,
+            agent::answer_approval,
+            agent::cancel_turn,
+            commands::list_registry,
+            commands::add_project,
+            commands::add_app,
+            commands::remove_project,
+            commands::remove_app,
+            commands::grant_read,
+            commands::revoke_grant,
+            commands::revoke_session_grant,
+            commands::list_reminders,
+            commands::delete_reminder,
+            commands::list_activity,
+            commands::clear_activity,
             store::get_settings,
             store::set_language,
             store::set_retention,
