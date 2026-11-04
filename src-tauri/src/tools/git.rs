@@ -134,6 +134,9 @@ fn first_failure<T>(result: Result<T, ToolFailureCode>) -> Result<T, ToolFailure
 /// Status of the registered project. `cancel` is shared with the caller, who sets it on timeout
 /// or when the person cancels; the walk checks it between steps.
 pub fn status(project: &VerifiedDir, cancel: &Arc<AtomicBool>) -> Result<Summary, ToolFailureCode> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(ToolFailureCode::Canceled);
+    }
     // `.git` must be a real folder right inside the project: not a link, not a `gitdir:` file that
     // points somewhere we did not register.
     let dot_git = Path::new(&project.path).join(".git");
@@ -242,7 +245,22 @@ fn compare_with_upstream(repo: &gix::Repository, summary: &mut Summary) {
         return;
     }
     let Ok(Some(head)) = repo.head_name() else { return };
-    let Some(Ok(upstream_name)) = repo.branch_remote_tracking_ref_name(head.as_ref(), gix::remote::Direction::Fetch) else {
+    // gix's own lookup ignores repository config because of the filter above, so the two plain
+    // settings are read here. They only name a reference; nothing is run from them.
+    let short = head.shorten().to_string();
+    let config = repo.config_snapshot();
+    let (Some(remote), Some(merge)) = (
+        config.string(format!("branch.{short}.remote").as_str()),
+        config.string(format!("branch.{short}.merge").as_str()),
+    ) else {
+        return;
+    };
+    let (remote, merge) = (remote.to_string(), merge.to_string());
+    let Some(branch) = merge.strip_prefix("refs/heads/") else { return };
+    if remote == "." || remote.is_empty() || remote.contains(['\\', ':', ' ']) {
+        return;
+    }
+    let Ok(upstream_name) = gix::refs::FullName::try_from(format!("refs/remotes/{remote}/{branch}")) else {
         return;
     };
     summary.upstream = Some(clean_name(upstream_name.shorten(), 80));
@@ -265,3 +283,7 @@ fn compare_with_upstream(repo: &gix::Repository, summary: &mut Summary) {
     summary.ahead = count(local.detach(), upstream.detach());
     summary.behind = count(upstream.detach(), local.detach());
 }
+
+#[cfg(test)]
+#[path = "git_tests.rs"]
+mod tests;
