@@ -536,8 +536,8 @@ impl Agent {
         }
         let stop = Arc::new(AtomicBool::new(false));
         let started = Instant::now();
-        let (work, flag) = (action.clone(), Arc::clone(&stop));
-        let mut task = tokio::task::spawn_blocking(move || tools::execute_blocking(&work, &flag, started));
+        let (work, flag, limit) = (action.clone(), Arc::clone(&stop), self.tool_timeout);
+        let mut task = tokio::task::spawn_blocking(move || tools::execute_blocking(&work, &flag, started, limit));
         tokio::select! {
             done = &mut task => done.unwrap_or(Err(ToolFailureCode::Failed)),
             () = tokio::time::sleep(self.tool_timeout) => { stop.store(true, Ordering::SeqCst); Err(ToolFailureCode::Timeout) }

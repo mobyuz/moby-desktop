@@ -933,6 +933,22 @@ mod tests {
     }
 
     #[test]
+    fn the_history_file_moves_from_the_roaming_folder_to_the_local_one_once() {
+        let old = TempDir::new();
+        let new = TempDir::new();
+        std::fs::write(old.file(), b"history").unwrap();
+        assert!(move_legacy_file(&old.0, &new.0).unwrap());
+        assert!(!old.file().exists());
+        assert_eq!(std::fs::read(new.file()).unwrap(), b"history");
+        // Nothing to move, or a file already in place: left alone.
+        assert!(!move_legacy_file(&old.0, &new.0).unwrap());
+        std::fs::write(old.file(), b"stale").unwrap();
+        assert!(!move_legacy_file(&old.0, &new.0).unwrap());
+        assert_eq!(std::fs::read(new.file()).unwrap(), b"history");
+        assert!(!move_legacy_file(&new.0, &new.0).unwrap());
+    }
+
+    #[test]
     fn account_ids_are_plain_tokens() {
         assert!(is_account_id("7f3a90c2-1111-4222-8333-444455556666"));
         assert!(!is_account_id(""));

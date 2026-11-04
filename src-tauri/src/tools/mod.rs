@@ -237,7 +237,7 @@ fn path_code(error: paths::PathError) -> ToolFailureCode {
 
 /// Steps 5 and 6 for the blocking tools. Runs on a worker thread. Paths are verified here, after
 /// any confirmation, so a folder swapped for a junction while the dialog was open is caught.
-pub fn execute_blocking(action: &Action, cancel: &Arc<AtomicBool>, started: Instant) -> Result<String, ToolFailureCode> {
+pub fn execute_blocking(action: &Action, cancel: &Arc<AtomicBool>, started: Instant, limit: Duration) -> Result<String, ToolFailureCode> {
     match action {
         Action::Git { project } => {
             let dir = paths::verify_dir(&project.path).map_err(path_code)?;
@@ -246,7 +246,7 @@ pub fn execute_blocking(action: &Action, cancel: &Arc<AtomicBool>, started: Inst
         }
         Action::Search { project, query, max } => {
             let dir = paths::verify_dir(&project.path).map_err(path_code)?;
-            let found = search::search(&dir, query, *max, cancel, started + TOOL_TIMEOUT)?;
+            let found = search::search(&dir, query, *max, cancel, started + limit)?;
             let body = if found.is_empty() { "no matching file names".to_owned() } else { format!("{} matching file names:\n{}", found.len(), found.join("\n")) };
             Ok(text::untrusted_output("search_files", &body, MAX_OUTPUT_BYTES))
         }
