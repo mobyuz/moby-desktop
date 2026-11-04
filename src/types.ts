@@ -28,6 +28,25 @@ export interface ChatMessage {
   text: string;
 }
 
+/** A message as sent to /v1/agent/turn. */
+export interface TurnMessage {
+  kind: "user" | "assistant";
+  text: string;
+}
+
+/** Device settings kept by Rust. `retention_days` null keeps history until it is deleted. */
+export interface Settings {
+  language: Language;
+  retention_days: number | null;
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  /** Unix milliseconds. */
+  updated_at: number;
+}
+
 export type AgentEvent =
   | { event: "speech_delta"; text: string }
   | { event: "tool_call" }
