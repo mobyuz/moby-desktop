@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 <img src="src-tauri/icons-source.svg" alt="Moby" width="112" height="112">
 
@@ -26,8 +26,9 @@ Chat with Moby from your computer and manage your account.
 Moby is a small ESP32-S3 robot with animated OLED eyes, a push-to-talk button, and a hardware mute switch. **Moby Desktop** is the app that connects you to it. Today it does what [moby-api](https://github.com/mobyuz/moby-api) already supports:
 
 - **Sign in.** Create an account, confirm your email, and reset your password. You stay signed in between launches.
-- **Chat with Moby.** Replies stream in as they are written, and the face follows along.
+- **Chat with Moby.** Replies stream in as they are written, and the face follows along. Conversations are saved on your computer, so you can come back to them.
 - **Manage your account.** Change your name, check today's usage, sign other computers out, download your data, or delete your account.
+- **Control what is kept.** Choose how long history stays, or delete all of it, under **Settings**. Settings work before you sign in.
 
 ## Screenshots
 
@@ -67,7 +68,8 @@ Early development. Features appear in the app once they work end to end.
 | Google sign-in, voice (`/v1/voice`) | 🔜 |
 | USB robot link and audio streaming | 🔜 |
 | Safe local tools with approvals: `git_status`, `open_app`, `open_project`, `search_files`, `create_reminder` | 🔜 |
-| Local history database, signed updates, installer distribution | 🔜 |
+| Local history in SQLite, per account, with retention and delete-all | ✅ |
+| Signed updates, installer distribution | 🔜 |
 
 ## Architecture
 
@@ -76,13 +78,15 @@ flowchart LR
     subgraph PC["Your computer"]
         UI["Interface<br/>React"] <-->|"IPC"| Client["API client<br/>Rust"]
         Client <--> Vault[("Windows<br/>Credential Manager")]
+        UI <-->|"IPC"| Store["Local store<br/>Rust"]
+        Store <--> DB[("SQLite<br/>history")]
     end
     Client <-->|"HTTPS"| API["Moby API<br/>accounts, AI"]
 ```
 
 | Layer | Technology | Role |
 | --- | --- | --- |
-| Shell | Tauri 2, Rust | Window, security policy, API client, token storage |
+| Shell | Tauri 2, Rust | Window, security policy, API client, token storage, local history |
 | UI | React 19, TypeScript, Vite | Screens and the animated face |
 | Contract | `@mobyuz/moby-protocol` | Shared expressions |
 
@@ -95,10 +99,13 @@ The interface is black and white, in light and dark themes that you can pick und
 | Path | Purpose |
 | --- | --- |
 | `src/face/` | The virtual face and per-expression metadata |
-| `src/screens/` | Sign-in, chat, and account |
+| `src/screens/` | Sign-in, chat, conversation list, settings, and account |
 | `src/store.tsx` | App state and the chat turn |
+| `src/history.ts` | Limits for what each turn sends, and conversation titles |
 | `src/api.ts` | Typed calls to the Rust commands |
 | `src-tauri/` | Rust shell, API client, token storage, window, and CSP |
+| `src-tauri/src/store.rs` | The SQLite history and settings, and the commands that reach them |
+| `src-tauri/migrations/` | Versioned SQL schema steps |
 | `tests/` | Unit tests |
 | `docs/adr/` | Architecture decision records |
 
@@ -154,11 +161,12 @@ The binary is `src-tauri/target/release/moby-desktop.exe`, and the per-user inst
 
 ## Security
 
-- The webview has **no filesystem or shell access** and an empty capability set. It can only call the commands in `src-tauri/src/api.rs`.
+- The webview has **no filesystem or shell access** and an empty capability set. It can only call the commands in `src-tauri/src/api.rs` and `src-tauri/src/store.rs`.
 - The production content security policy allows only the app's own files. All network traffic goes through Rust.
 - The refresh token lives in the Windows Credential Manager and the access token in Rust memory. Neither reaches the web layer.
 - The app sends tokens only over HTTPS, or to a server on this computer.
-- Conversations stay in memory while the app runs. The server does not store them.
+- Conversations are saved only on this computer, in a SQLite file in your Windows profile (`%APPDATA%\uz.moby.desktop\moby.db`). The server does not store them, and each account sees only its own. The file is protected by your Windows account and is not encrypted separately ([ADR 0003](docs/adr/0003-local-store.md)). Old conversations are removed after 30 days unless you change that, and **Settings** can delete everything at once.
+- If the history file can't be opened, chat still works from memory and the app says nothing is being saved.
 
 Please do not put real credentials in issues or pull requests.
 
