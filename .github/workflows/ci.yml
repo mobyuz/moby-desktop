@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: moby-desktop
+          persist-credentials: false
+      # The protocol package is not published yet, so build it from its main branch
+      # next to this checkout. Replace with a pinned @mobyuz/moby-protocol version
+      # once the first release exists (see docs/adr/0001-desktop-foundation.md).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: mobyuz/moby-protocol
+          ref: main
+          path: moby-protocol
+          token: ${{ secrets.MOBY_PROTOCOL_READ_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: moby-desktop/.node-version
+      - run: npm install --global npm@11.6.2
+      - name: Build moby-protocol
+        working-directory: moby-protocol
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+      - name: Install dependencies
+        working-directory: moby-desktop
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Frontend checks
+        working-directory: moby-desktop
+        run: |
+          npm run lint
+          npm run typecheck
+          npm test
+      - name: Rust checks
+        working-directory: moby-desktop/src-tauri
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+      - name: Build the Windows app
+        working-directory: moby-desktop
+        run: npm run tauri -- build --bundles nsis
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: moby-windows-installer
+          path: moby-desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 7
