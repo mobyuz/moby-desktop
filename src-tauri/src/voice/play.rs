@@ -88,7 +88,11 @@ impl Speaker for DeviceSpeaker {
                     done.store(true, Ordering::SeqCst);
                 })
         };
-        if thread.is_err() || !opened_rx.recv_timeout(Duration::from_secs(5)).unwrap_or(false) {
+        if thread.is_err()
+            || !opened_rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap_or(false)
+        {
             stop.store(true, Ordering::SeqCst);
             return Err(PlayError::NoDevice);
         }
@@ -124,7 +128,10 @@ pub mod fake {
         }
 
         fn stop(&self) {
-            if !self.was_stopped.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            if !self
+                .was_stopped
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
                 *self.stopped.lock().unwrap_or_else(PoisonError::into_inner) += 1;
             }
         }

@@ -819,7 +819,10 @@ impl Voice {
                 return Ok(());
             }
             *mic = Some(mic::MicCapture::start().map_err(|message| {
-                Failure::new("no_microphone", &format!("The microphone could not be opened: {message}"))
+                Failure::new(
+                    "no_microphone",
+                    &format!("The microphone could not be opened: {message}"),
+                )
             })?);
             drop(mic);
             if let Some(active) = lock(&self.slot).take() {
@@ -906,10 +909,7 @@ pub async fn voice_revoke_consent(
 /// Stop: ends capture handling, the speech request, the agent turn, the speech request and
 /// playback, whichever is running.
 #[tauri::command]
-pub async fn voice_cancel(
-    voice: State<'_, Voice>,
-    robot: State<'_, Robot>,
-) -> Result<(), Failure> {
+pub async fn voice_cancel(voice: State<'_, Voice>, robot: State<'_, Robot>) -> Result<(), Failure> {
     voice.cancel(&*robot);
     Ok(())
 }
@@ -923,7 +923,9 @@ pub async fn voice_turn(
     turn: TurnInput,
     on_event: Channel<UiEvent>,
 ) -> Result<(), Failure> {
-    voice.continue_turn(&turn_id, turn, Arc::new(on_event)).await
+    voice
+        .continue_turn(&turn_id, turn, Arc::new(on_event))
+        .await
 }
 
 #[cfg(debug_assertions)]

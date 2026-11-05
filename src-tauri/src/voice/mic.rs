@@ -122,10 +122,17 @@ mod tests {
     #[test]
     fn stereo_48k_becomes_mono_16k() {
         // 480 stereo frames at 48 kHz are 10 ms, so 160 samples at 16 kHz.
-        let input: Vec<f32> = (0..960).map(|n| if n % 2 == 0 { 0.5 } else { -0.5 }).collect();
+        let input: Vec<f32> = (0..960)
+            .map(|n| if n % 2 == 0 { 0.5 } else { -0.5 })
+            .collect();
         let pcm = to_pcm16k_mono(&input, 48_000, 2);
         assert_eq!(pcm.len(), 160 * 2);
-        assert!(pcm.chunks_exact(2).all(|pair| i16::from_le_bytes([pair[0], pair[1]]) == 0));
+        assert!(
+            pcm.as_chunks::<2>()
+                .0
+                .iter()
+                .all(|pair| i16::from_le_bytes(*pair) == 0)
+        );
     }
 
     #[test]

@@ -536,7 +536,11 @@ fn robot_audio_is_ignored_and_counted_and_never_answered() {
     // The desktop records nothing. It replies with keepalives and one `cancel` for the stream
     // that a robot with no audio capability had no business starting.
     let names = rig.received_names();
-    assert!(names[1..].iter().all(|name| name == "set_config" || name == "cancel"));
+    assert!(
+        names[1..]
+            .iter()
+            .all(|name| name == "set_config" || name == "cancel")
+    );
     assert_eq!(names.iter().filter(|name| *name == "cancel").count(), 1);
 }
 
@@ -1046,7 +1050,12 @@ fn audio_rig() -> (Rig, Heard) {
     let heard: Heard = Arc::new(Mutex::new(Vec::new()));
     let sink: AudioSink = {
         let heard = Arc::clone(&heard);
-        Arc::new(move |event| heard.lock().unwrap_or_else(PoisonError::into_inner).push(event))
+        Arc::new(move |event| {
+            heard
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(event)
+        })
     };
     let robot = SimRobot::new(DEVICE)
         .with_key(key(7))
@@ -1088,9 +1097,13 @@ fn a_held_button_becomes_one_checked_utterance() {
     let events = summary(&heard);
     assert_eq!(events.len(), 2, "{events:?}");
     assert_eq!(events[0], "started");
-    let size: usize = events[1].strip_prefix("utterance:").unwrap().parse().unwrap();
+    let size: usize = events[1]
+        .strip_prefix("utterance:")
+        .unwrap()
+        .parse()
+        .unwrap();
     assert!(
-        (45 * 640..=55 * 640).contains(&size) && size % 640 == 0,
+        (45 * 640..=55 * 640).contains(&size) && size.is_multiple_of(640),
         "{size}"
     );
     if let AudioEvent::Utterance { pcm, .. } = &heard.lock().unwrap()[1] {
@@ -1104,7 +1117,11 @@ fn a_held_button_becomes_one_checked_utterance() {
 fn every_stream_fault_ends_the_turn_with_its_own_reason_and_no_audio_is_passed_on() {
     let cases = [
         (StreamFault::SkipFrame(3), "aborted:audio_sequence", 1_000),
-        (StreamFault::DuplicateFrame(3), "aborted:audio_sequence", 1_000),
+        (
+            StreamFault::DuplicateFrame(3),
+            "aborted:audio_sequence",
+            1_000,
+        ),
         (StreamFault::SwapFrames(3), "aborted:audio_sequence", 1_000),
         (StreamFault::WrongStream(3), "aborted:audio_sequence", 1_000),
         (StreamFault::WrongSize(3), "aborted:audio_frame_size", 1_000),
@@ -1113,8 +1130,16 @@ fn every_stream_fault_ends_the_turn_with_its_own_reason_and_no_audio_is_passed_o
         (StreamFault::NeverEnds, "aborted:audio_too_long", 6_000),
         (StreamFault::WrongCount, "aborted:audio_incomplete", 1_000),
         (StreamFault::MuteAt(10), "aborted:audio_muted", 1_000),
-        (StreamFault::MuteAndKeepSending(10), "aborted:audio_muted", 1_000),
-        (StreamFault::RobotCancel(10), "aborted:audio_canceled", 1_000),
+        (
+            StreamFault::MuteAndKeepSending(10),
+            "aborted:audio_muted",
+            1_000,
+        ),
+        (
+            StreamFault::RobotCancel(10),
+            "aborted:audio_canceled",
+            1_000,
+        ),
     ];
     for (fault, expected, ms) in cases {
         let (mut rig, heard) = audio_rig();
@@ -1299,7 +1324,11 @@ fn the_whole_chain_runs_from_the_simulated_robot_through_stub_speech_services() 
     assert_eq!(speaker.played.lock().unwrap().len(), 1);
     assert_eq!(
         robot.faces(),
-        [Expression::Thinking, Expression::Speaking, Expression::Happy]
+        [
+            Expression::Thinking,
+            Expression::Speaking,
+            Expression::Happy
+        ]
     );
     // The faces are then sent over the link, and the simulated robot shows the last one.
     let faces: Vec<_> = robot.faces.lock().unwrap().clone();

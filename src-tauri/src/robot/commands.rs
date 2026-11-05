@@ -232,8 +232,7 @@ mod dev {
                     supervisor.command(Command::Disconnect)?;
                     let mut robot = self.robot.lock().unwrap_or_else(PoisonError::into_inner);
                     if fresh {
-                        let mut next =
-                            SimRobot::new(SIM_DEVICE).with_capabilities(&["usb_pcm"]);
+                        let mut next = SimRobot::new(SIM_DEVICE).with_capabilities(&["usb_pcm"]);
                         if paired_elsewhere {
                             let mut bytes = [0_u8; PairKey::BYTES];
                             if OsRandom.fill(&mut bytes) {

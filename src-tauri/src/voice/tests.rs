@@ -1,4 +1,4 @@
-﻿//! The voice chain against a stub moby-api on this computer, a recording robot link and a fake
+//! The voice chain against a stub moby-api on this computer, a recording robot link and a fake
 //! speaker. Nothing here uses a real server, a speech provider, a robot or a sound device.
 
 use std::sync::{Arc, Mutex, PoisonError};
@@ -23,7 +23,10 @@ struct Events(Mutex<Vec<UiEvent>>);
 
 impl Sink for Events {
     fn emit(&self, event: UiEvent) {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).push(event);
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(event);
     }
 }
 
@@ -43,14 +46,7 @@ struct World {
 }
 
 fn marker_pcm(ms: usize) -> Pcm {
-    Pcm::new(
-        AUDIO_MARKER
-            .iter()
-            .copied()
-            .cycle()
-            .take(ms * 32)
-            .collect(),
-    )
+    Pcm::new(AUDIO_MARKER.iter().copied().cycle().take(ms * 32).collect())
 }
 
 impl World {
@@ -115,7 +111,9 @@ impl World {
                     .await;
                 return;
             }
-            if Instant::now() > until || self.voice.view().stage == Stage::Idle && self.voice.view().code.is_some() {
+            if Instant::now() > until
+                || self.voice.view().stage == Stage::Idle && self.voice.view().code.is_some()
+            {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -126,7 +124,10 @@ impl World {
     async fn talk(&self) {
         let turn = self.voice.start_turn();
         let deps = self.deps();
-        tokio::join!(self.voice.run_turn(&deps, turn, marker_pcm(1000)), self.page());
+        tokio::join!(
+            self.voice.run_turn(&deps, turn, marker_pcm(1000)),
+            self.page()
+        );
     }
 
     /// Starts a turn, runs `act` once `ready` is true, then waits for the turn to end.
@@ -138,7 +139,11 @@ impl World {
             }
         };
         let deps = self.deps();
-        tokio::join!(self.voice.run_turn(&deps, turn, marker_pcm(1000)), page, act);
+        tokio::join!(
+            self.voice.run_turn(&deps, turn, marker_pcm(1000)),
+            page,
+            act
+        );
     }
 
     fn code(&self) -> Option<String> {
@@ -189,10 +194,22 @@ async fn the_happy_path_goes_through_every_stage_and_plays_the_answer() {
     );
     assert_eq!(
         world.robot.faces(),
-        [Expression::Thinking, Expression::Speaking, Expression::Happy]
+        [
+            Expression::Thinking,
+            Expression::Speaking,
+            Expression::Happy
+        ]
     );
     // The words reached the page; Rust itself wrote no history.
-    assert!(world.events.0.lock().unwrap().iter().any(|e| matches!(e, UiEvent::Completed { .. })));
+    assert!(
+        world
+            .events
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, UiEvent::Completed { .. }))
+    );
 }
 
 #[tokio::test]
@@ -222,12 +239,25 @@ async fn consent_of_another_account_does_not_count() {
 #[tokio::test]
 async fn accepting_records_the_version_on_the_server_and_here_and_revoking_is_immediate() {
     let world = World::build(false, Limits::default(), Duration::from_secs(30), &[]);
-    assert!(!world.voice.consent_status(&world.api, &world.store).unwrap().accepted);
-    let status = world.voice.accept_consent(&world.api, &world.store).await.unwrap();
+    assert!(
+        !world
+            .voice
+            .consent_status(&world.api, &world.store)
+            .unwrap()
+            .accepted
+    );
+    let status = world
+        .voice
+        .accept_consent(&world.api, &world.store)
+        .await
+        .unwrap();
     assert_eq!(status.version.as_deref(), Some("dev-1"));
     let posts = world.stub.to("/v1/consents");
     let sent: serde_json::Value = serde_json::from_slice(&posts[1].body).unwrap();
-    assert_eq!(sent, json!({"type":"cloud_voice","version":"dev-1","accepted":true}));
+    assert_eq!(
+        sent,
+        json!({"type":"cloud_voice","version":"dev-1","accepted":true})
+    );
 
     world.talk().await;
     assert_eq!(world.stub.to("/v1/voice/stt").len(), 1);
@@ -242,17 +272,36 @@ async fn accepting_records_the_version_on_the_server_and_here_and_revoking_is_im
     let sent: serde_json::Value = serde_json::from_slice(&last.body).unwrap();
     assert_eq!(sent["accepted"], false);
     world.talk().await;
-    assert_eq!(world.stub.to("/v1/voice/stt").len(), 1, "nothing more goes up");
+    assert_eq!(
+        world.stub.to("/v1/voice/stt").len(),
+        1,
+        "nothing more goes up"
+    );
 }
 
 #[tokio::test]
 async fn a_refused_acceptance_stores_nothing() {
     let world = World::build(false, Limits::default(), Duration::from_secs(30), &[]);
     world.stub.set(|c| {
-        c.consents_post = Reply::Json(400, r#"{"code":"invalid_input","message":"x","request_id":"r"}"#.into());
+        c.consents_post = Reply::Json(
+            400,
+            r#"{"code":"invalid_input","message":"x","request_id":"r"}"#.into(),
+        );
     });
-    assert!(world.voice.accept_consent(&world.api, &world.store).await.is_err());
-    assert!(!world.voice.consent_status(&world.api, &world.store).unwrap().accepted);
+    assert!(
+        world
+            .voice
+            .accept_consent(&world.api, &world.store)
+            .await
+            .is_err()
+    );
+    assert!(
+        !world
+            .voice
+            .consent_status(&world.api, &world.store)
+            .unwrap()
+            .accepted
+    );
 }
 
 #[tokio::test]
@@ -278,7 +327,9 @@ async fn revoking_during_speech_to_text_drops_the_request_and_nothing_else_is_se
 #[tokio::test]
 async fn consent_withdrawn_while_the_agent_works_stops_the_answer_from_being_spoken() {
     let world = World::new();
-    world.stub.set(|c| c.agent = vec![Reply::Sse(vec![ANSWER.to_owned()])]);
+    world
+        .stub
+        .set(|c| c.agent = vec![Reply::Sse(vec![ANSWER.to_owned()])]);
     world
         .store
         .with(|db| db.set_voice_consent(Some((USER, "dev-1")), now_ms()))
@@ -286,10 +337,17 @@ async fn consent_withdrawn_while_the_agent_works_stops_the_answer_from_being_spo
     let turn = world.voice.start_turn();
     let revoker = async {
         wait_stage(&world, Stage::AwaitingTurn).await;
-        world.store.with(|db| db.set_voice_consent(None, now_ms())).unwrap();
+        world
+            .store
+            .with(|db| db.set_voice_consent(None, now_ms()))
+            .unwrap();
     };
     let deps = world.deps();
-    tokio::join!(world.voice.run_turn(&deps, turn, marker_pcm(1000)), world.page(), revoker);
+    tokio::join!(
+        world.voice.run_turn(&deps, turn, marker_pcm(1000)),
+        world.page(),
+        revoker
+    );
     assert!(world.stub.to("/v1/voice/tts").is_empty());
 }
 
@@ -409,7 +467,9 @@ async fn speech_to_text_errors_are_shown_in_the_apps_words() {
     ] {
         let world = World::new();
         let body = r#"{"code":"provider_secret_sk-123","message":"leaky","request_id":"r"}"#;
-        world.stub.set(|c| c.stt = Reply::Json(status, body.to_owned()));
+        world
+            .stub
+            .set(|c| c.stt = Reply::Json(status, body.to_owned()));
         world.talk().await;
         assert_eq!(world.code().as_deref(), Some(code), "{status}");
         assert_eq!(world.voice.view().stage, Stage::Error);
@@ -424,11 +484,20 @@ async fn speech_to_text_errors_are_shown_in_the_apps_words() {
 async fn a_403_from_the_server_turns_voice_off_here() {
     let world = World::new();
     world.stub.set(|c| {
-        c.stt = Reply::Json(403, r#"{"code":"voice_consent_required","message":"m","request_id":"r"}"#.into());
+        c.stt = Reply::Json(
+            403,
+            r#"{"code":"voice_consent_required","message":"m","request_id":"r"}"#.into(),
+        );
     });
     world.talk().await;
     assert_eq!(world.code().as_deref(), Some("voice_consent_required"));
-    assert!(!world.voice.consent_status(&world.api, &world.store).unwrap().accepted);
+    assert!(
+        !world
+            .voice
+            .consent_status(&world.api, &world.store)
+            .unwrap()
+            .accepted
+    );
 }
 
 #[tokio::test]
@@ -460,7 +529,9 @@ async fn text_to_speech_and_playback_failures_are_reported() {
     assert_eq!(world.code().as_deref(), Some("voice_provider"));
 
     let world = World::new();
-    world.stub.set(|c| c.tts = Reply::Wav(b"RIFF not really".to_vec()));
+    world
+        .stub
+        .set(|c| c.tts = Reply::Wav(b"RIFF not really".to_vec()));
     world.talk().await;
     assert_eq!(world.code().as_deref(), Some("voice_failed"));
     assert!(world.speaker.played.lock().unwrap().is_empty());
@@ -479,7 +550,9 @@ async fn an_unsure_or_empty_transcript_asks_again_and_runs_no_turn() {
         r#"{"text":"   ","language":"uz","script":"latn","confidence":0.9}"#,
     ] {
         let world = World::new();
-        world.stub.set(|c| c.stt = Reply::Json(200, body.to_owned()));
+        world
+            .stub
+            .set(|c| c.stt = Reply::Json(200, body.to_owned()));
         world.talk().await;
         assert!(world.stub.to("/v1/agent/turn").is_empty());
         assert_eq!(world.voice.view().stage, Stage::Idle);
@@ -509,7 +582,11 @@ async fn the_page_cannot_change_what_was_heard() {
             let sink: Arc<dyn Sink> = world.events.clone();
             let other = world
                 .voice
-                .continue_turn(&pending.id, TurnInput::for_test("delete everything"), sink.clone())
+                .continue_turn(
+                    &pending.id,
+                    TurnInput::for_test("delete everything"),
+                    sink.clone(),
+                )
                 .await;
             assert_eq!(other.unwrap_err().code_str(), "not_found");
             let wrong_id = world
@@ -542,9 +619,26 @@ async fn a_spoken_yes_never_approves_a_reminder() {
     });
     world.talk().await;
     let events = world.events.0.lock().unwrap().clone();
-    assert!(events.iter().any(|e| matches!(e, UiEvent::ApprovalRequired { .. })), "the dialog was shown on screen");
-    assert!(events.iter().any(|e| matches!(e, UiEvent::ApprovalClosed { outcome: "expired", .. })));
-    assert!(world.store.with(|db| db.reminders(USER)).unwrap().is_empty());
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, UiEvent::ApprovalRequired { .. })),
+        "the dialog was shown on screen"
+    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        UiEvent::ApprovalClosed {
+            outcome: "expired",
+            ..
+        }
+    )));
+    assert!(
+        world
+            .store
+            .with(|db| db.reminders(USER))
+            .unwrap()
+            .is_empty()
+    );
     let audit = world.store.with(|db| db.audit_list(USER)).unwrap();
     assert!(audit.iter().any(|e| e.decision == "expired"));
 }
@@ -568,27 +662,49 @@ async fn a_spoken_yes_never_launches_a_program_the_native_window_decides() {
         ];
     });
     world.talk().await;
-    assert_eq!(world.confirmer.shown().len(), 1, "the person was asked in a native window");
+    assert_eq!(
+        world.confirmer.shown().len(),
+        1,
+        "the person was asked in a native window"
+    );
     std::thread::sleep(Duration::from_millis(300));
-    assert!(!std::path::Path::new(&format!("{exe}.ran")).exists(), "the program did not run");
+    assert!(
+        !std::path::Path::new(&format!("{exe}.ran")).exists(),
+        "the program did not run"
+    );
 }
 
 #[test]
 fn the_voice_module_has_no_way_to_answer_an_approval() {
     let source = include_str!("mod.rs");
     let live = source.split("#[cfg(test)]").next().unwrap();
-    for forbidden in [".answer(", "answer_approval", "Decision", "Confirmer", "confirm("] {
-        assert!(!live.contains(forbidden), "voice/mod.rs mentions {forbidden}");
+    for forbidden in [
+        ".answer(",
+        "answer_approval",
+        "Decision",
+        "Confirmer",
+        "confirm(",
+    ] {
+        assert!(
+            !live.contains(forbidden),
+            "voice/mod.rs mentions {forbidden}"
+        );
     }
 }
 
 // ---- privacy ----------------------------------------------------------------------------
 
-fn files_with(root: &std::path::Path, since: std::time::SystemTime, needles: &[Vec<u8>]) -> Vec<String> {
+fn files_with(
+    root: &std::path::Path,
+    since: std::time::SystemTime,
+    needles: &[Vec<u8>],
+) -> Vec<String> {
     let mut found = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             let Ok(meta) = entry.metadata() else { continue };
@@ -597,7 +713,9 @@ fn files_with(root: &std::path::Path, since: std::time::SystemTime, needles: &[V
             } else if meta.len() < 32 * 1024 * 1024
                 && meta.modified().is_ok_and(|m| m >= since)
                 && let Ok(bytes) = std::fs::read(&path)
-                && needles.iter().any(|n| bytes.windows(n.len()).any(|w| w == n.as_slice()))
+                && needles
+                    .iter()
+                    .any(|n| bytes.windows(n.len()).any(|w| w == n.as_slice()))
             {
                 found.push(path.display().to_string());
             }
@@ -620,12 +738,25 @@ async fn audio_and_transcripts_reach_no_log_no_audit_entry_and_no_file() {
     assert!(!logs.is_empty(), "the chain does log its steps");
     assert!(!logs.contains("ZEBRA") && !logs.contains("secret"));
     assert!(logs.is_ascii());
-    let audit = serde_json::to_string(&world.store.with(|db| db.audit_list(USER)).unwrap()).unwrap();
+    let audit =
+        serde_json::to_string(&world.store.with(|db| db.audit_list(USER)).unwrap()).unwrap();
     assert!(!audit.contains("ZEBRA") && !audit.contains("QUOKKA"));
-    let events = format!("{:?}", AudioEvent::Utterance { stream_id: 1, pcm: marker_pcm(100) });
+    let events = format!(
+        "{:?}",
+        AudioEvent::Utterance {
+            stream_id: 1,
+            pcm: marker_pcm(100)
+        }
+    );
     assert_eq!(events, "Utterance { stream_id: 1, pcm: Pcm(3200 bytes) }");
     // Rust wrote no conversation either: the page does that, under the retention rules.
-    assert!(world.store.with(|db| db.list_conversations(USER)).unwrap().is_empty());
+    assert!(
+        world
+            .store
+            .with(|db| db.list_conversations(USER))
+            .unwrap()
+            .is_empty()
+    );
     let needles = vec![AUDIO_MARKER.to_vec(), b"ZEBRA-QUOKKA-7731".to_vec()];
     assert!(files_with(&world.scratch.0, since, &needles).is_empty());
     assert!(files_with(&std::env::temp_dir(), since, &needles).is_empty());
@@ -639,22 +770,28 @@ async fn the_pc_microphone_never_opens_without_consent_and_is_a_development_feat
     let world = World::build(false, Limits::default(), Duration::from_secs(30), &[]);
     assert!(world.voice.dev_mic(true, &world.api, &world.store).is_err());
     assert!(!world.voice.view().mic_on);
-    assert!(PC_MIC_COMPILED, "tests are not release builds");
+    const { assert!(PC_MIC_COMPILED) };
     assert!(world.voice.view().dev_mic);
 }
 
 #[test]
 fn aborted_streams_show_a_clear_message_and_upload_nothing() {
     let world = World::new();
-    for reason in [AbortReason::BadSequence, AbortReason::Overrun, AbortReason::Stalled, AbortReason::TooLong] {
+    for reason in [
+        AbortReason::BadSequence,
+        AbortReason::Overrun,
+        AbortReason::Stalled,
+        AbortReason::TooLong,
+    ] {
         world.voice.on_capture_aborted(&world.deps(), reason);
         let view = world.voice.view();
         assert_eq!(view.stage, Stage::Error);
         assert_eq!(view.code.as_deref(), Some(reason.code()));
         assert!(view.message.unwrap().contains("nothing was used"));
     }
-    world.voice.on_capture_aborted(&world.deps(), AbortReason::Mute);
+    world
+        .voice
+        .on_capture_aborted(&world.deps(), AbortReason::Mute);
     assert_eq!(world.voice.view().stage, Stage::Idle);
     assert!(world.stub.requests().is_empty());
 }
-

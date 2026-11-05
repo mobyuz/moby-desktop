@@ -134,18 +134,32 @@ impl AbortReason {
             Self::BadSequence | Self::BadFrameSize | Self::CountMismatch => {
                 "Part of what Moby heard was lost on the way, so nothing was used. Please try again."
             }
-            Self::TooLong => "That was too long, so nothing was used. Please say it in a shorter sentence.",
-            Self::Overrun => "Moby could not keep up with the audio, so nothing was used. Please try again.",
-            Self::Stalled => "The audio from Moby stopped in the middle, so nothing was used. Please try again.",
+            Self::TooLong => {
+                "That was too long, so nothing was used. Please say it in a shorter sentence."
+            }
+            Self::Overrun => {
+                "Moby could not keep up with the audio, so nothing was used. Please try again."
+            }
+            Self::Stalled => {
+                "The audio from Moby stopped in the middle, so nothing was used. Please try again."
+            }
             Self::Mute => "Moby's mute switch went on, so the audio was thrown away.",
             Self::RobotCancel => "Moby canceled the recording, so the audio was thrown away.",
             Self::RobotError => "Moby had a problem while recording, so the audio was thrown away.",
             Self::Empty => "Moby did not hear anything.",
-            Self::TooShort => "That was too short to understand. Hold the talk button while you speak.",
-            Self::Unsupported => "Moby sent audio in a form this app does not take, so it was thrown away.",
-            Self::Overlap => "Moby started a second recording before the first ended, so both were thrown away.",
+            Self::TooShort => {
+                "That was too short to understand. Hold the talk button while you speak."
+            }
+            Self::Unsupported => {
+                "Moby sent audio in a form this app does not take, so it was thrown away."
+            }
+            Self::Overlap => {
+                "Moby started a second recording before the first ended, so both were thrown away."
+            }
             Self::NotAllowed => "Moby is not allowed to record right now, so nothing was used.",
-            Self::LinkLost => "The connection to Moby was lost while recording, so the audio was thrown away.",
+            Self::LinkLost => {
+                "The connection to Moby was lost while recording, so the audio was thrown away."
+            }
             Self::Canceled => "Stopped.",
         }
     }
@@ -493,12 +507,7 @@ mod tests {
         let frames_allowed = MAX_UTTERANCE_BYTES / 640;
         feed(&mut a, 9, u32::try_from(frames_allowed).unwrap());
         assert!(a.is_open(), "exactly at the limit is still fine");
-        a.on_frame(
-            10,
-            9,
-            u32::try_from(frames_allowed).unwrap(),
-            &[0; 640],
-        );
+        a.on_frame(10, 9, u32::try_from(frames_allowed).unwrap(), &[0; 640]);
         assert!(!a.is_open());
         assert_eq!(seen.lock().unwrap()[1], "aborted audio_too_long");
     }
@@ -597,7 +606,14 @@ mod tests {
         a.on_start(0, &start(3), true);
         assert_eq!(a.stats.streams_aborted, 2);
         assert!(!a.is_open());
-        assert!(seen.lock().unwrap().iter().filter(|s| s.contains("overlap")).count() == 2);
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|s| s.contains("overlap"))
+                .count()
+                == 2
+        );
     }
 
     #[test]

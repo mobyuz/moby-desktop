@@ -321,7 +321,10 @@ impl Api {
         };
         let failed = |error: reqwest::Error| {
             if timeout.is_some() && error.is_timeout() {
-                Failure::new("timeout", "Moby's server took too long to answer. Try again.")
+                Failure::new(
+                    "timeout",
+                    "Moby's server took too long to answer. Try again.",
+                )
             } else {
                 Failure::offline()
             }

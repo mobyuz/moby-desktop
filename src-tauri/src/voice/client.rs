@@ -106,7 +106,10 @@ fn voice_failure(code: &str, status: u16) -> Failure {
             "voice_consent_required",
             "Voice is off for your account. Turn it on in Settings to talk to Moby.",
         ),
-        (_, 413) => ("voice_too_long", "That was too long for the server to take."),
+        (_, 413) => (
+            "voice_too_long",
+            "That was too long for the server to take.",
+        ),
         (_, 429) => (
             "voice_quota",
             "Today's voice allowance is used up. It resets at midnight UTC.",
@@ -131,12 +134,14 @@ async fn voice_error(response: reqwest::Response) -> Failure {
 }
 
 /// Sends a whole clip to speech to text.
-pub async fn transcribe(api: &Api, wave: Vec<u8>, timeout: Duration) -> Result<Transcript, Failure> {
+pub async fn transcribe(
+    api: &Api,
+    wave: Vec<u8>,
+    timeout: Duration,
+) -> Result<Transcript, Failure> {
     let response = api
         .send_with(Method::POST, "/v1/voice/stt", Some(timeout), |request| {
-            request
-                .header(CONTENT_TYPE, "audio/wav")
-                .body(wave.clone())
+            request.header(CONTENT_TYPE, "audio/wav").body(wave.clone())
         })
         .await?;
     if !response.status().is_success() {
@@ -144,7 +149,10 @@ pub async fn transcribe(api: &Api, wave: Vec<u8>, timeout: Duration) -> Result<T
     }
     let raw: RawTranscript = response.json().await.map_err(|error| {
         if error.is_timeout() {
-            Failure::new("timeout", "Moby's server took too long to answer. Try again.")
+            Failure::new(
+                "timeout",
+                "Moby's server took too long to answer. Try again.",
+            )
         } else {
             Failure::new("voice_failed", "The voice request failed. Try again.")
         }
@@ -188,9 +196,15 @@ pub async fn synthesize(
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| {
             if error.is_timeout() {
-                Failure::new("timeout", "Moby's server took too long to answer. Try again.")
+                Failure::new(
+                    "timeout",
+                    "Moby's server took too long to answer. Try again.",
+                )
             } else {
-                Failure::new("offline", "Can't connect to Moby. Check your connection and try again.")
+                Failure::new(
+                    "offline",
+                    "Can't connect to Moby. Check your connection and try again.",
+                )
             }
         })?;
         if wave.len() + chunk.len() > MAX_WAV_BYTES {
@@ -206,7 +220,9 @@ pub async fn synthesize(
 
 /// The `cloud_voice` version the server wants accepted now.
 pub async fn current_consent_version(api: &Api) -> Result<String, Failure> {
-    let response = api.send_with(Method::GET, "/v1/consents", None, |r| r).await?;
+    let response = api
+        .send_with(Method::GET, "/v1/consents", None, |r| r)
+        .await?;
     if !response.status().is_success() {
         return Err(failure_from(response).await);
     }
@@ -225,7 +241,9 @@ pub async fn current_consent_version(api: &Api) -> Result<String, Failure> {
 pub async fn set_consent(api: &Api, version: &str, accepted: bool) -> Result<(), Failure> {
     let body = json!({"type": "cloud_voice", "version": version, "accepted": accepted});
     let response = api
-        .send_with(Method::POST, "/v1/consents", None, |request| request.json(&body))
+        .send_with(Method::POST, "/v1/consents", None, |request| {
+            request.json(&body)
+        })
         .await?;
     if response.status().is_success() {
         Ok(())
@@ -241,7 +259,11 @@ mod tests {
     #[test]
     fn speech_is_cut_to_the_api_limit_after_a_sentence_when_possible() {
         assert_eq!(speakable("  Hello. "), "Hello.");
-        let long = format!("{} Next one starts here and runs on {}", "Short one.", "x".repeat(600));
+        let long = format!(
+            "{} Next one starts here and runs on {}",
+            "Short one.",
+            "x".repeat(600)
+        );
         let said = speakable(&long);
         assert_eq!(said, "Short one.");
         let no_stop = "y".repeat(900);
@@ -260,9 +282,19 @@ mod tests {
 
     #[test]
     fn failures_are_written_by_the_app() {
-        assert_eq!(voice_failure("voice_consent_required", 403).code_str(), "voice_consent_required");
+        assert_eq!(
+            voice_failure("voice_consent_required", 403).code_str(),
+            "voice_consent_required"
+        );
         assert_eq!(voice_failure("whatever", 429).code_str(), "voice_quota");
-        assert_eq!(voice_failure("provider says: secret", 502).code_str(), "voice_provider");
-        assert!(!voice_failure("provider says: secret", 502).message_str().contains("secret"));
+        assert_eq!(
+            voice_failure("provider says: secret", 502).code_str(),
+            "voice_provider"
+        );
+        assert!(
+            !voice_failure("provider says: secret", 502)
+                .message_str()
+                .contains("secret")
+        );
     }
 }

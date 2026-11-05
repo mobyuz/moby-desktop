@@ -326,7 +326,10 @@ impl Db {
         })
     }
 
-    pub(crate) fn list_conversations(&self, user: &str) -> Result<Vec<ConversationSummary>, StoreError> {
+    pub(crate) fn list_conversations(
+        &self,
+        user: &str,
+    ) -> Result<Vec<ConversationSummary>, StoreError> {
         check_account(user)?;
         let mut statement = self.conn.prepare(
             "SELECT id, title, updated_at FROM conversations WHERE user_id = ?1 ORDER BY updated_at DESC, rowid DESC LIMIT ?2",

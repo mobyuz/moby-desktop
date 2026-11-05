@@ -33,7 +33,6 @@ pub struct Config {
 
 #[derive(Clone, Debug)]
 pub struct Request {
-    pub method: String,
     pub path: String,
     pub body: Vec<u8>,
     /// The client closed the connection while the stub was holding the reply back.
@@ -154,7 +153,6 @@ fn serve(mut stream: std::net::TcpStream, cfg: &Mutex<Config>, seen: &Mutex<Vec<
     let index = {
         let mut list = lock(seen);
         list.push(Request {
-            method: method.clone(),
             path: path.clone(),
             body: raw[head_end..].to_vec(),
             dropped: false,

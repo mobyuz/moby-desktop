@@ -393,8 +393,8 @@ impl SimRobot {
             if talk.dead {
                 return;
             }
-            let elapsed = u32::try_from(now.saturating_sub(talk.started_at) / FRAME_MS)
-                .unwrap_or(u32::MAX);
+            let elapsed =
+                u32::try_from(now.saturating_sub(talk.started_at) / FRAME_MS).unwrap_or(u32::MAX);
             let target = match (talk.released_at, talk.fault) {
                 (Some(at), _) => at,
                 (None, StreamFault::NeverEnds) => u32::MAX,

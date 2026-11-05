@@ -85,8 +85,10 @@ pub fn decode(wave: &[u8]) -> Result<Vec<i16>, WavError> {
         return Err(WavError::Invalid);
     }
     Ok(audio
-        .chunks_exact(2)
-        .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| i16::from_le_bytes(*pair))
         .collect())
 }
 
@@ -96,7 +98,9 @@ mod tests {
 
     #[test]
     fn encode_then_decode_returns_the_same_samples() {
-        let pcm: Vec<u8> = (0..400_u16).flat_map(|n| (n as i16 - 200).to_le_bytes()).collect();
+        let pcm: Vec<u8> = (0..400_u16)
+            .flat_map(|n| (n as i16 - 200).to_le_bytes())
+            .collect();
         let wave = encode(&pcm).unwrap();
         assert_eq!(wave.len(), 44 + pcm.len());
         let samples = decode(&wave).unwrap();
