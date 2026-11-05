@@ -128,29 +128,29 @@ impl Sink for Channel<UiEvent> {
 }
 
 #[derive(Clone)]
-pub struct Cancel {
+pub(crate) struct Cancel {
     flag: Arc<AtomicBool>,
     notify: Arc<Notify>,
 }
 
 impl Cancel {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             flag: Arc::new(AtomicBool::new(false)),
             notify: Arc::new(Notify::new()),
         }
     }
 
-    fn cancel(&self) {
+    pub(crate) fn cancel(&self) {
         self.flag.store(true, Ordering::SeqCst);
         self.notify.notify_waiters();
     }
 
-    fn is_canceled(&self) -> bool {
+    pub(crate) fn is_canceled(&self) -> bool {
         self.flag.load(Ordering::SeqCst)
     }
 
-    async fn cancelled(&self) {
+    pub(crate) async fn cancelled(&self) {
         loop {
             let notified = self.notify.notified();
             if self.is_canceled() {
@@ -193,6 +193,20 @@ impl TurnInput {
             }],
             language: Language::En,
         }
+    }
+
+    /// The text of the newest user message: for a voice turn, it must be the transcript Rust holds.
+    pub(crate) fn last_user_text(&self) -> Option<&str> {
+        self.messages
+            .last()
+            .filter(|message| message.kind == InKind::User)
+            .map(|message| message.text.as_str())
+    }
+
+    /// The language the speaker used, as the speech service heard it.
+    pub(crate) fn with_language(mut self, language: Language) -> Self {
+        self.language = language;
+        self
     }
 
     fn into_messages(self) -> Result<(Vec<AgentMessage>, Language), Failure> {

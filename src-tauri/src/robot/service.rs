@@ -10,6 +10,7 @@ use tauri::AppHandle;
 use tauri::ipc::Channel;
 use tokio::sync::oneshot;
 
+use super::audio::AudioSink;
 use super::clock::{Clock, SystemClock};
 use super::pairings::{DeviceRecord, Fault, PairingStore, SystemPairings};
 use super::session::UserError;
@@ -45,7 +46,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 impl Robot {
     /// Starts the link thread. If a robot has been paired on this computer, it also starts
     /// looking for one; otherwise nothing touches a port until the person asks.
-    pub fn start(app: AppHandle) -> Self {
+    pub fn start(app: AppHandle, audio: AudioSink) -> Self {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
         let pairings: Arc<dyn PairingStore> = Arc::new(SystemPairings::new(app));
         let subscribers: Arc<Mutex<Vec<Channel<Snapshot>>>> = Arc::new(Mutex::new(Vec::new()));
@@ -72,7 +73,8 @@ impl Robot {
             connector,
             Arc::clone(&pairings),
             publish,
-        );
+        )
+        .with_audio(audio);
         let paired_before = pairings.list().is_ok_and(|list| !list.is_empty());
         if paired_before {
             let (reply, _) = oneshot::channel();
@@ -112,6 +114,23 @@ impl Robot {
             .send(Msg::Command(command, reply))
             .map_err(|_| unavailable())?;
         answer.await.map_err(|_| unavailable())?
+    }
+
+    /// Sends a command and does not wait for the answer. For the voice chain, which must never be
+    /// held up by the link thread, and which has nothing to do with the answer.
+    pub fn command_nowait(&self, command: Command) {
+        let (reply, _) = oneshot::channel();
+        let _ = self.tx.send(Msg::Command(command, reply));
+    }
+
+    /// Stops the push-to-talk stream that is open, if any, and throws its audio away.
+    pub fn cancel_capture(&self) {
+        self.command_nowait(Command::CancelCapture);
+    }
+
+    /// Shows a face on the robot (thinking, speaking, happy, error).
+    pub fn face(&self, expression: moby_protocol::Expression, hold_ms: u32) {
+        self.command_nowait(Command::Face(expression, hold_ms));
     }
 
     pub async fn ports(&self) -> Result<Vec<PortInfo>, UserError> {

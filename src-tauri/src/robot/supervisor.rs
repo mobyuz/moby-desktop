@@ -8,10 +8,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use moby_protocol::StableId;
+use moby_protocol::usb::ControlMessage;
+use moby_protocol::{Expression, StableId};
 
+use super::audio::{Assembler, AudioSink};
 use super::clock::Clock;
-use super::link::{Framer, RESYNC, Stats};
+use super::link::{Framer, Incoming, RESYNC, Stats};
 use super::pairings::PairingStore;
 use super::session::{DropReason, OsRandom, Random, Session, UserError};
 use super::transport::{Connector, OpenError, PortInfo, PortKind, Transport};
@@ -41,6 +43,10 @@ pub enum Command {
     BeginPairing,
     CancelPairing,
     Unpair(String),
+    /// Stop capturing and handling the current push-to-talk stream, and tell the robot.
+    CancelCapture,
+    /// Show a face on the robot for a while (thinking, speaking, happy, error).
+    Face(Expression, u32),
 }
 
 struct Backoff {
@@ -63,6 +69,7 @@ struct Link {
     transport: Box<dyn Transport>,
     framer: Framer,
     session: Session,
+    assembler: Assembler,
     port: PortInfo,
     reported_ready: bool,
 }
@@ -80,6 +87,7 @@ pub struct Supervisor {
     random: Box<dyn Fn() -> Box<dyn Random> + Send>,
     publish: Box<dyn FnMut(&Snapshot) + Send>,
     log: Box<dyn Fn(&str) + Send>,
+    audio: AudioSink,
     state: State,
     target: Option<Target>,
     backoff: Backoff,
@@ -102,6 +110,7 @@ impl Supervisor {
             random: Box::new(|| Box::new(OsRandom)),
             publish,
             log: Box::new(|line| eprintln!("moby: robot link: {line}")),
+            audio: std::sync::Arc::new(|_| {}),
             state: State::Idle,
             target: None,
             backoff: Backoff { index: 0 },
@@ -109,6 +118,12 @@ impl Supervisor {
             attempts: 0,
             last_published: None,
         }
+    }
+
+    /// Where finished utterances and aborted streams go. Without one, audio is thrown away.
+    pub fn with_audio(mut self, audio: AudioSink) -> Self {
+        self.audio = audio;
+        self
     }
 
     #[cfg(test)]
@@ -167,6 +182,19 @@ impl Supervisor {
             Command::CancelPairing => {
                 if let State::Online(link) = &mut self.state {
                     link.session.cancel_pairing();
+                }
+                Ok(())
+            }
+            Command::CancelCapture => {
+                if let State::Online(link) = &mut self.state {
+                    link.assembler.cancel();
+                    link.flush_cancels(now);
+                }
+                Ok(())
+            }
+            Command::Face(expression, hold_ms) => {
+                if let State::Online(link) = &mut self.state {
+                    link.session.show_face(now, expression, hold_ms);
                 }
                 Ok(())
             }
@@ -266,6 +294,7 @@ impl Supervisor {
                     transport,
                     framer: Framer::new(),
                     session: Session::new(Arc::clone(&self.pairings), random, now),
+                    assembler: Assembler::new(Arc::clone(&self.audio)),
                     port,
                     reported_ready: false,
                 }));
@@ -340,7 +369,10 @@ impl Supervisor {
                 let mut snapshot = link.session.snapshot();
                 let mut stats: Stats = link.framer.stats.clone();
                 stats.unexpected_messages = link.session.unexpected;
-                stats.audio_events_ignored = link.session.audio_events_ignored;
+                stats.audio_frames_ignored = link.assembler.stats.frames_ignored;
+                stats.audio_events_ignored = link.assembler.stats.events_ignored;
+                stats.audio_streams = link.assembler.stats.streams_completed;
+                stats.audio_aborted = link.assembler.stats.streams_aborted;
                 snapshot.stats = stats;
                 snapshot.port = Some(link.port.name.clone());
                 snapshot.simulated = link.port.simulated;
@@ -368,6 +400,46 @@ enum LinkEnd {
 }
 
 impl Link {
+    /// Routes one decoded frame. Audio frames and stream events go to the assembler first, so a
+    /// stream is judged by the state the session was in when it arrived.
+    fn handle(&mut self, now: u64, item: Incoming) {
+        match item {
+            Incoming::Audio {
+                stream_id,
+                sequence,
+                payload,
+            } => self.assembler.on_frame(now, stream_id, sequence, &payload),
+            Incoming::Control(message) => {
+                match &message {
+                    ControlMessage::AudioStart { data, .. } => {
+                        self.assembler
+                            .on_start(now, data, self.session.audio_allowed());
+                    }
+                    ControlMessage::AudioEnd { data, .. } => self.assembler.on_end(data),
+                    ControlMessage::Error { data, .. } => {
+                        self.assembler.on_robot_error(data.code);
+                    }
+                    _ => {}
+                }
+                self.session.on_message(now, &message);
+                // The mute switch ends a stream and discards what was buffered, whichever message
+                // brought the news. A new session or a lost key does the same.
+                if self.session.muted() {
+                    self.assembler.on_mute();
+                } else {
+                    self.assembler.check_allowed(self.session.audio_allowed());
+                }
+            }
+        }
+        self.flush_cancels(now);
+    }
+
+    fn flush_cancels(&mut self, now: u64) {
+        for stream_id in self.assembler.take_cancels() {
+            self.session.cancel_stream(now, stream_id);
+        }
+    }
+
     fn run(&mut self, now: u64, clock: &dyn Clock) -> Result<(), LinkEnd> {
         let mut buf = [0_u8; READ_CHUNK];
         let mut total = 0;
@@ -382,11 +454,13 @@ impl Link {
             }
             total += count;
             wait = Duration::ZERO;
-            for message in self.framer.push(&buf[..count]) {
-                self.session.on_message(now, &message);
+            for item in self.framer.push_all(&buf[..count]) {
+                self.handle(now, item);
             }
         }
         let now = now.max(clock.now_ms());
+        self.assembler.tick(now);
+        self.flush_cancels(now);
         let dropped = self.session.tick(now);
         for message in self.session.take_outgoing(now) {
             if let Some(wire) = self.framer.encode(&message) {

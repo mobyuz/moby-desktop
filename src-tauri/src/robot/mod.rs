@@ -16,8 +16,10 @@
 //! * `sim.rs` is a robot in software that follows the firmware. It exists only in development
 //!   builds and tests.
 //!
-//! Audio is not here: it is stage D4, and nothing in this module starts a microphone.
+//! * `audio.rs` puts the robot's push-to-talk stream back together, strictly (stage D4). The robot
+//!   is the only microphone this module knows. Nothing here records on the computer.
 
+pub(crate) mod audio;
 mod clock;
 pub(crate) mod commands;
 mod link;

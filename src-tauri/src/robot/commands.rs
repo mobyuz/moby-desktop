@@ -132,7 +132,9 @@ mod dev {
 
     use super::super::clock::Clock;
     use super::super::session::{OsRandom, Random, UserError};
-    use super::super::sim::{CombinedConnector, SIMULATOR_MARKER, SimConnector, SimRobot};
+    use super::super::sim::{
+        CombinedConnector, SIMULATOR_MARKER, SimConnector, SimRobot, StreamFault,
+    };
     use super::super::supervisor::{Command, Supervisor, Target};
     use super::super::transport::{Connector, SerialConnector};
 
@@ -166,6 +168,28 @@ mod dev {
         CorruptFrames,
         Oversize,
         Garbage,
+        /// The next push-to-talk stream goes wrong in the named way.
+        StreamFault {
+            fault: DevFault,
+        },
+    }
+
+    #[derive(Debug, Clone, Copy, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum DevFault {
+        None,
+        BadSequence,
+        Duplicate,
+        Swap,
+        WrongSize,
+        Overrun,
+        CutOff,
+        NeverEnds,
+        WrongCount,
+        WrongStream,
+        MuteMidStream,
+        MuteAndKeepSending,
+        RobotCancel,
     }
 
     pub struct SimHub {
@@ -177,7 +201,9 @@ mod dev {
         // Keeps the marker in development binaries, so the same search can show it is absent
         // from a release binary.
         std::hint::black_box(SIMULATOR_MARKER);
-        let robot = Arc::new(Mutex::new(SimRobot::new(SIM_DEVICE)));
+        let robot = Arc::new(Mutex::new(
+            SimRobot::new(SIM_DEVICE).with_capabilities(&["usb_pcm"]),
+        ));
         let enabled = Arc::new(Mutex::new(false));
         let connector = CombinedConnector {
             real: Box::new(SerialConnector),
@@ -206,7 +232,8 @@ mod dev {
                     supervisor.command(Command::Disconnect)?;
                     let mut robot = self.robot.lock().unwrap_or_else(PoisonError::into_inner);
                     if fresh {
-                        let mut next = SimRobot::new(SIM_DEVICE);
+                        let mut next =
+                            SimRobot::new(SIM_DEVICE).with_capabilities(&["usb_pcm"]);
                         if paired_elsewhere {
                             let mut bytes = [0_u8; PairKey::BYTES];
                             if OsRandom.fill(&mut bytes) {
@@ -271,6 +298,25 @@ mod dev {
                 }
                 DevAction::Garbage => {
                     robot.inject_garbage();
+                    Ok(())
+                }
+                DevAction::StreamFault { fault } => {
+                    // Each fault strikes the fourth frame, 60 ms in: early enough to see at once.
+                    robot.inject_stream_fault(match fault {
+                        DevFault::None => StreamFault::None,
+                        DevFault::BadSequence => StreamFault::SkipFrame(3),
+                        DevFault::Duplicate => StreamFault::DuplicateFrame(3),
+                        DevFault::Swap => StreamFault::SwapFrames(3),
+                        DevFault::WrongSize => StreamFault::WrongSize(3),
+                        DevFault::Overrun => StreamFault::Overrun(3),
+                        DevFault::CutOff => StreamFault::CutOff(3),
+                        DevFault::NeverEnds => StreamFault::NeverEnds,
+                        DevFault::WrongCount => StreamFault::WrongCount,
+                        DevFault::WrongStream => StreamFault::WrongStream(3),
+                        DevFault::MuteMidStream => StreamFault::MuteAt(3),
+                        DevFault::MuteAndKeepSending => StreamFault::MuteAndKeepSending(3),
+                        DevFault::RobotCancel => StreamFault::RobotCancel(3),
+                    });
                     Ok(())
                 }
             }

@@ -3,7 +3,11 @@
 //! (`moby_session.c` in moby-firmware): hello at once and every second, a new attempt every 3 s,
 //! a heartbeat every 2 s once acknowledged, the session ended after three heartbeats that no
 //! desktop frame answered, and the pairing rules (idle and unpaired only, a talk press confirms,
-//! the key is taken only after that, a long press wipes it). No hardware was used to check it.
+//! the key is taken only after that, a long press wipes it) and, with the `usb_pcm` capability,
+//! the push-to-talk stream of `claude/f4-ptt-audio` (ADR 0002): a press on an authenticated, unmuted,
+//! idle robot opens a stream, frames of 640 bytes numbered from 0 follow in real time, and the
+//! release, the mute switch, a `cancel`, an overrun or the limit end it. Faults can be injected
+//! into the next stream. No hardware was used to check any of it.
 //!
 //! This whole file is compiled only for tests and for builds with debug assertions. A release
 //! build contains none of it (`SIMULATOR_MARKER` below is searched for in the release binary).
@@ -42,8 +46,61 @@ enum State {
     Speaking,
 }
 
+/// A way for the next push-to-talk stream to go wrong. `at` counts frames from 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamFault {
+    None,
+    /// Frame `at` is never sent, so the sequence has a gap.
+    SkipFrame(u32),
+    /// Frame `at` is sent twice.
+    DuplicateFrame(u32),
+    /// Frames `at` and `at + 1` are sent in the wrong order.
+    SwapFrames(u32),
+    /// Frame `at` has half the announced size.
+    WrongSize(u32),
+    /// At frame `at` the robot's ring overflows: `E_AUDIO_OVERRUN`, then `audio_end` with `error`.
+    Overrun(u32),
+    /// After frame `at` the robot says nothing more: no frames, no `audio_end`.
+    CutOff(u32),
+    /// The robot never lets go: frames keep coming as fast as the link takes them.
+    NeverEnds,
+    /// `audio_end` claims one frame more than was sent.
+    WrongCount,
+    /// Frame `at` carries another stream's ID.
+    WrongStream(u32),
+    /// The mute switch goes on after frame `at`, as it would in a hand.
+    MuteAt(u32),
+    /// The mute switch goes on after frame `at`, and a misbehaving robot keeps sending frames and
+    /// never sends `audio_end`.
+    MuteAndKeepSending(u32),
+    /// The robot cancels its own stream after frame `at`.
+    RobotCancel(u32),
+}
+
+struct Talk {
+    id: u16,
+    started_at: u64,
+    /// Frames made so far, whether or not they were sent.
+    produced: u32,
+    wire_seq: u32,
+    released_at: Option<u32>,
+    fault: StreamFault,
+    dead: bool,
+}
+
+const FRAME_MS: u64 = 20;
+const FRAME_BYTES: usize = 640;
+/// Room the sim leaves in its output buffer before it makes more audio.
+const AUDIO_ROOM: usize = 8 * 1024;
+/// The firmware's own limit, 15 s of 20 ms frames.
+const SIM_MAX_FRAMES: u32 = 750;
+/// What the simulated microphone "hears", repeated: a pattern a test can search for.
+pub const AUDIO_MARKER: [u8; 8] = [0x5A, 0xC3, 0x91, 0x7E, 0x2B, 0xD4, 0x08, 0xF6];
+
 #[derive(Debug, Clone, Default)]
 pub struct SimStats {
+    pub streams_started: u32,
+    pub frames_sent: u32,
     pub sessions_started: u32,
     pub sessions_dropped_for_silence: u32,
     pub heartbeats_sent: u32,
@@ -87,6 +144,9 @@ pub struct SimRobot {
     out: VecDeque<u8>,
     error_sent_at: Option<u64>,
     corrupt_next: u32,
+    talk: Option<Talk>,
+    next_fault: StreamFault,
+    next_stream_id: u16,
     now: u64,
     pub stats: SimStats,
     /// When each desktop control frame arrived, and its name. Bounded.
@@ -129,6 +189,9 @@ impl SimRobot {
             out: VecDeque::new(),
             error_sent_at: None,
             corrupt_next: 0,
+            talk: None,
+            next_fault: StreamFault::None,
+            next_stream_id: 1,
             now: 0,
             stats: SimStats::default(),
             received: VecDeque::new(),
@@ -139,6 +202,12 @@ impl SimRobot {
 
     pub fn with_key(mut self, key: PairKey) -> Self {
         self.key = Some(key);
+        self
+    }
+
+    /// Capabilities the hello advertises. `usb_pcm` turns on the push-to-talk stream.
+    pub fn with_capabilities(mut self, capabilities: &[&'static str]) -> Self {
+        self.capabilities = capabilities.to_vec();
         self
     }
 
@@ -190,9 +259,13 @@ impl SimRobot {
         self.expression_until = None;
         self.error_until = None;
         self.face = Expression::Idle;
+        let streaming = self.talk.is_some();
         if self.established {
             self.state = State::Idle;
             self.event("mute_changed", json!({"muted": muted, "source": "switch"}));
+            if muted && streaming {
+                self.end_stream("mute");
+            }
             if muted && was_pairing {
                 self.emit_error("E_MUTED", "pairing cancelled by mute");
             }
@@ -211,11 +284,196 @@ impl SimRobot {
         } else {
             self.event("button_event", json!({"button": "talk", "action": "press"}));
             self.press_announced = true;
+            self.maybe_start_stream(now);
+        }
+    }
+
+    /// The firmware's rule: a stream starts on a press edge, only on an authenticated, unmuted,
+    /// idle robot that offers `usb_pcm`, and never while another is open.
+    fn maybe_start_stream(&mut self, now: u64) {
+        if !self.capabilities.contains(&"usb_pcm")
+            || !self.authenticated
+            || self.muted
+            || self.state != State::Idle
+            || self.talk.is_some()
+        {
+            return;
+        }
+        let id = self.next_stream_id;
+        self.next_stream_id = self.next_stream_id.checked_add(1).unwrap_or(1);
+        self.stats.streams_started += 1;
+        self.state = State::Listening;
+        self.face = Expression::Listening;
+        self.expression_until = None;
+        let fault = std::mem::replace(&mut self.next_fault, StreamFault::None);
+        self.talk = Some(Talk {
+            id,
+            started_at: now,
+            produced: 0,
+            wire_seq: 0,
+            released_at: None,
+            fault,
+            dead: false,
+        });
+        self.event(
+            "audio_start",
+            json!({"stream_id": id, "reason": "button", "codec": "pcm_s16le",
+                   "sample_rate": 16000, "channels": 1, "frame_ms": 20, "preroll_ms": 0}),
+        );
+    }
+
+    /// The next stream will go wrong in this way.
+    pub fn inject_stream_fault(&mut self, fault: StreamFault) {
+        self.next_fault = fault;
+    }
+
+    #[cfg(test)]
+    pub fn is_streaming(&self) -> bool {
+        self.talk.is_some()
+    }
+
+    fn audio_out(&mut self, stream_id: u16, sequence: u32, size: usize) {
+        if !self.link_up || self.silent {
+            return;
+        }
+        let payload: Vec<u8> = AUDIO_MARKER.iter().copied().cycle().take(size).collect();
+        let frame = Frame {
+            kind: FrameKind::RobotAudio,
+            stream_id,
+            sequence,
+            payload: &payload,
+        };
+        let mut wire = vec![0; MAX_WIRE_LEN];
+        let Ok(written) = frame.encode(&mut wire) else {
+            return;
+        };
+        for byte in &wire[..written] {
+            if self.out.len() >= MAX_OUT {
+                return;
+            }
+            self.out.push_back(*byte);
+        }
+        self.stats.frames_sent += 1;
+    }
+
+    /// Ends the open stream the way the firmware does: capture is off already, `audio_end` says
+    /// why, and `frames` counts what was sent.
+    fn end_stream(&mut self, reason: &str) {
+        let Some(talk) = self.talk.take() else {
+            return;
+        };
+        if self.state == State::Listening {
+            self.state = State::Idle;
+            self.face = Expression::Idle;
+        }
+        if talk.dead {
+            return;
+        }
+        let mut frames = talk.produced;
+        if talk.fault == StreamFault::WrongCount {
+            frames += 1;
+        }
+        self.event(
+            "audio_end",
+            json!({"stream_id": talk.id, "reason": reason, "frames": frames,
+                   "duration_ms": frames * 20}),
+        );
+    }
+
+    /// Makes the audio that is due, in real time, as long as the link has room.
+    fn advance_stream(&mut self, now: u64) {
+        while self.out.len() < AUDIO_ROOM {
+            let Some(talk) = &mut self.talk else {
+                return;
+            };
+            if talk.dead {
+                return;
+            }
+            let elapsed = u32::try_from(now.saturating_sub(talk.started_at) / FRAME_MS)
+                .unwrap_or(u32::MAX);
+            let target = match (talk.released_at, talk.fault) {
+                (Some(at), _) => at,
+                (None, StreamFault::NeverEnds) => u32::MAX,
+                (None, StreamFault::MuteAndKeepSending(_)) => elapsed,
+                (None, _) => elapsed.min(SIM_MAX_FRAMES),
+            };
+            if talk.produced >= target {
+                if talk.released_at.is_some() {
+                    self.end_stream("button_release");
+                } else if talk.produced >= SIM_MAX_FRAMES && talk.fault != StreamFault::NeverEnds {
+                    self.end_stream("max_duration");
+                }
+                return;
+            }
+            let (id, index, seq, fault) = (talk.id, talk.produced, talk.wire_seq, talk.fault);
+            talk.produced += 1;
+            talk.wire_seq += 1;
+            match fault {
+                StreamFault::SkipFrame(at) if at == index => {}
+                StreamFault::DuplicateFrame(at) if at == index => {
+                    self.audio_out(id, seq, FRAME_BYTES);
+                    self.audio_out(id, seq, FRAME_BYTES);
+                }
+                StreamFault::SwapFrames(at) if at == index => {
+                    // Frame `at + 1` goes first.
+                    if let Some(talk) = &mut self.talk {
+                        talk.produced += 1;
+                        talk.wire_seq += 1;
+                    }
+                    self.audio_out(id, seq + 1, FRAME_BYTES);
+                    self.audio_out(id, seq, FRAME_BYTES);
+                }
+                StreamFault::WrongSize(at) if at == index => {
+                    self.audio_out(id, seq, FRAME_BYTES / 2);
+                }
+                StreamFault::WrongStream(at) if at == index => {
+                    self.audio_out(id.wrapping_add(1).max(1), seq, FRAME_BYTES);
+                }
+                StreamFault::Overrun(at) if at == index => {
+                    self.emit_error("E_AUDIO_OVERRUN", "capture ring overflowed");
+                    self.end_stream("error");
+                    return;
+                }
+                StreamFault::CutOff(at) if at == index => {
+                    if let Some(talk) = &mut self.talk {
+                        talk.dead = true;
+                    }
+                    return;
+                }
+                _ => self.audio_out(id, seq, FRAME_BYTES),
+            }
+            match fault {
+                StreamFault::MuteAt(at) if at == index => {
+                    let now = self.now;
+                    self.set_mute(now, true);
+                    return;
+                }
+                StreamFault::MuteAndKeepSending(at) if at == index => {
+                    // The switch goes on, the event goes out, and this robot carries on anyway.
+                    self.muted = true;
+                    self.event("mute_changed", json!({"muted": true, "source": "switch"}));
+                }
+                StreamFault::RobotCancel(at) if at == index => {
+                    self.end_stream("cancel");
+                    return;
+                }
+                _ => {}
+            }
         }
     }
 
     pub fn release(&mut self, now: u64) {
         self.step(now);
+        if let Some(talk) = &mut self.talk
+            && talk.released_at.is_none()
+        {
+            talk.released_at = Some(
+                u32::try_from(now.saturating_sub(talk.started_at) / FRAME_MS)
+                    .unwrap_or(u32::MAX)
+                    .min(SIM_MAX_FRAMES)
+                    .max(talk.produced),
+            );
+        }
         if self.press_announced {
             self.press_announced = false;
             self.event(
@@ -237,6 +495,7 @@ impl SimRobot {
         self.key = None;
         self.authenticated = false;
         self.pair_confirmed = false;
+        self.end_stream("cancel");
         if self.state == State::Pairing {
             self.state = State::Idle;
         }
@@ -346,6 +605,7 @@ impl SimRobot {
         self.press_announced = false;
         self.nonce = [0; 16];
         self.state = State::Idle;
+        self.talk = None;
     }
 
     fn effective(&self) -> Expression {
@@ -393,6 +653,7 @@ impl SimRobot {
             }
             return;
         }
+        self.advance_stream(now);
         if now >= self.next_heartbeat {
             if self.unanswered >= LIVENESS_MISSED {
                 self.stats.sessions_dropped_for_silence += 1;
@@ -702,8 +963,18 @@ impl SimRobot {
                     self.respond(&id, None);
                 }
             }
-            ControlMessage::Cancel { .. } => {
-                self.respond(&id, Some(("E_STATE", "no such stream")));
+            ControlMessage::Cancel { data, .. } => {
+                if self
+                    .talk
+                    .as_ref()
+                    .is_some_and(|talk| talk.id == data.stream_id.get())
+                {
+                    // Capture stops, buffered audio is dropped, `audio_end` says `cancel`.
+                    self.end_stream("cancel");
+                    self.respond(&id, None);
+                } else {
+                    self.respond(&id, Some(("E_STATE", "no such stream")));
+                }
             }
             ControlMessage::SetConfig { .. } => self.respond(&id, None),
             ControlMessage::PairBegin { data, .. } => {

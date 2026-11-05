@@ -526,12 +526,12 @@ fn robot_audio_is_ignored_and_counted_and_never_answered() {
     let stats = rig.snap().stats;
     assert_eq!(stats.audio_frames_ignored, 1);
     assert_eq!(stats.audio_events_ignored, 1);
-    // The desktop starts nothing and replies with nothing but keepalives.
-    assert!(
-        rig.received_names()[1..]
-            .iter()
-            .all(|name| name == "set_config")
-    );
+    assert_eq!(stats.audio_streams, 0);
+    // The desktop records nothing. It replies with keepalives and one `cancel` for the stream
+    // that a robot with no audio capability had no business starting.
+    let names = rig.received_names();
+    assert!(names[1..].iter().all(|name| name == "set_config" || name == "cancel"));
+    assert_eq!(names.iter().filter(|name| *name == "cancel").count(), 1);
 }
 
 // ---- mute ----------------------------------------------------------------------------------
@@ -941,14 +941,16 @@ fn the_protocol_frame_vectors_decode_the_same_way_in_the_desktop_link_layer() {
             panic!("bad row {fields:?}");
         };
         let mut framer = Framer::new();
-        let messages = framer.push(&hex(wire));
+        let items = framer.push_all(&hex(wire));
         let stats = framer.stats.clone();
         assert!(
-            messages.is_empty(),
+            items
+                .iter()
+                .all(|item| !matches!(item, super::link::Incoming::Control(_))),
             "{name}: no vector here is a robot control message"
         );
         match (result, kind) {
-            ("ok", "2") => assert_eq!(stats.audio_frames_ignored, 1, "{name}"),
+            ("ok", "2") => assert_eq!(items.len(), 1, "{name}: one robot audio frame"),
             // Desktop audio never comes from a robot.
             ("ok", "3") => assert_eq!(stats.wrong_sender, 1, "{name}"),
             ("bad_crc", _) => assert_eq!(stats.bad_crc, 1, "{name}"),

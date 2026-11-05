@@ -18,8 +18,9 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use moby_protocol::usb::{
-    CommandKind, ControlMessage, ControlVersion, DeviceConfig, ErrorCode, ErrorInfo, Hello,
-    PairBegin, PairKey, PairSetKey, PairTimeoutMs,
+    ActionDurationMs, AudioStreamId, Cancel, CommandKind, ControlMessage, ControlVersion,
+    DeviceConfig, ErrorCode, ErrorInfo, Hello, PairBegin, PairKey, PairSetKey, PairTimeoutMs,
+    SetExpression,
 };
 use moby_protocol::{Expression, PROTOCOL_VERSION, StableId};
 
@@ -40,8 +41,9 @@ const PAIR_GRACE_MS: u64 = 2_000;
 const ERROR_SHOWN_MS: u64 = 5_000;
 const MAX_PENDING: usize = 8;
 
-/// Capabilities the desktop needs in this stage. None: audio is a later stage, and a robot
-/// without it can still be paired and watched. D4 will require `usb_pcm`.
+/// Capabilities the desktop needs to talk to a robot at all. None: a robot without `usb_pcm` (the
+/// default firmware image has no microphone path) can still be paired and watched, and the
+/// interface says that voice is unavailable on it. See docs/adr/0007-voice-chain.md.
 pub const REQUIRED_CAPABILITIES: &[&str] = &[];
 const AUDIO_CAPABILITY: &str = "usb_pcm";
 
@@ -125,6 +127,9 @@ enum PendingKind {
     Keepalive,
     PairBegin,
     PairSetKey,
+    /// A face change or a cancel. The answer is read and dropped: the robot may refuse it (muted,
+    /// busy, or the stream already ended) and nothing depends on that.
+    Fire,
 }
 
 #[derive(Debug, Clone)]
@@ -165,7 +170,6 @@ pub struct Session {
     expression: Expression,
     error: Option<(RobotError, u64)>,
     pub unexpected: u64,
-    pub audio_events_ignored: u64,
 }
 
 fn ts(now: u64) -> u32 {
@@ -223,12 +227,25 @@ impl Session {
             expression: Expression::Disconnected,
             error: None,
             unexpected: 0,
-            audio_events_ignored: 0,
         }
     }
 
     pub fn established(&self) -> bool {
         self.stage == Stage::Established
+    }
+
+    /// The hardware mute, as the robot last reported it.
+    pub fn muted(&self) -> bool {
+        self.stage == Stage::Established && self.muted
+    }
+
+    /// Whether a push-to-talk stream may exist now: the session is up and authenticated, the mute
+    /// switch is open, and this robot offers `usb_pcm`. A stream at any other time is refused.
+    pub fn audio_allowed(&self) -> bool {
+        self.stage == Stage::Established
+            && self.auth == Auth::Authenticated
+            && !self.muted
+            && self.device.as_ref().is_some_and(|device| device.audio)
     }
 
     // ---- input -------------------------------------------------------------------------
@@ -264,11 +281,9 @@ impl Session {
             ControlMessage::CommandError { id, data, .. } => {
                 self.on_response(now, id, Some(data));
             }
-            // Counted and dropped: audio is a later stage, and the desktop never starts it.
-            ControlMessage::AudioStart { .. } | ControlMessage::AudioEnd { .. } => {
-                self.audio_events_ignored += 1;
-            }
-            // Nothing in this stage acts on a wake word or a button press.
+            // The stream itself is put together in `audio.rs`, which the link feeds directly.
+            ControlMessage::AudioStart { .. } | ControlMessage::AudioEnd { .. } => {}
+            // Nothing acts on a wake word or a button press: a stream starts when the robot says so.
             ControlMessage::WakeDetected { .. } | ControlMessage::ButtonEvent { .. } => {}
             // Messages only the desktop sends never get here (the framer drops them).
             _ => self.unexpected += 1,
@@ -422,6 +437,7 @@ impl Session {
                 };
                 self.fail_pairing(code);
             }
+            (PendingKind::Fire, _) => {}
             (PendingKind::PairSetKey, None) => {
                 if matches!(self.pair, Pair::Saving { .. }) {
                     self.pair = Pair::Idle;
@@ -552,6 +568,60 @@ impl Session {
         self.pair_failure = None;
     }
 
+    /// Tells the robot to stop the stream it is sending. The robot answers `command_ok`, or
+    /// `E_STATE` when the stream already ended; both are fine.
+    pub fn cancel_stream(&mut self, now: u64, stream_id: u16) {
+        if self.stage != Stage::Established {
+            return;
+        }
+        let Ok(stream_id) = AudioStreamId::try_from(stream_id) else {
+            return;
+        };
+        let id = self.next_command_id();
+        self.push_pending(&id, PendingKind::Fire, now);
+        self.out.push_back(ControlMessage::Cancel {
+            v: ControlVersion::V1,
+            kind: CommandKind::Command,
+            id,
+            ts_ms: ts(now),
+            data: Cancel { stream_id },
+        });
+    }
+
+    /// Asks the robot to show a face (thinking, speaking, happy, error). The robot owns
+    /// listening, muted and disconnected, and the mute switch outranks everything, so this is
+    /// not sent while muted.
+    pub fn show_face(&mut self, now: u64, state: Expression, hold_ms: u32) {
+        if self.stage != Stage::Established
+            || self.muted
+            || self.auth != Auth::Authenticated
+            || matches!(
+                state,
+                Expression::Listening | Expression::Muted | Expression::Disconnected
+            )
+        {
+            return;
+        }
+        let (Ok(duration_ms), Ok(animation)) =
+            (ActionDurationMs::try_from(hold_ms), StableId::new("none"))
+        else {
+            return;
+        };
+        let id = self.next_command_id();
+        self.push_pending(&id, PendingKind::Fire, now);
+        self.out.push_back(ControlMessage::Expression {
+            v: ControlVersion::V1,
+            kind: CommandKind::Command,
+            id,
+            ts_ms: ts(now),
+            data: SetExpression {
+                state,
+                animation,
+                duration_ms,
+            },
+        });
+    }
+
     /// The key for this robot was removed from this computer.
     pub fn key_removed(&mut self, device_id: &StableId) {
         if let Some(device) = &mut self.device
@@ -615,7 +685,7 @@ impl Session {
         });
         for kind in expired {
             match kind {
-                PendingKind::Keepalive => {}
+                PendingKind::Keepalive | PendingKind::Fire => {}
                 PendingKind::PairBegin => {
                     if matches!(self.pair, Pair::Starting { .. }) {
                         self.fail_pairing("no_answer");

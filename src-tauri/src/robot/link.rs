@@ -20,12 +20,27 @@ pub struct Stats {
     /// A control message that only the desktop may send.
     pub wrong_sender: u64,
     pub sequence_gaps: u64,
-    /// Robot audio frames received and thrown away. Audio belongs to a later stage (D4).
+    /// Robot audio frames that belonged to no open stream, thrown away.
     pub audio_frames_ignored: u64,
-    /// `audio_start` and `audio_end` events, ignored for the same reason.
+    /// `audio_start` and `audio_end` events that did not fit (no stream, or not allowed).
     pub audio_events_ignored: u64,
+    /// Push-to-talk streams that arrived whole and were passed on.
+    pub audio_streams: u64,
+    /// Streams thrown away: lost frames, overrun, mute, cancel, too long.
+    pub audio_aborted: u64,
     /// Messages that did not fit the session's state, for example a reply nobody asked for.
     pub unexpected_messages: u64,
+}
+
+/// One decoded frame, in the order it arrived, so an `audio_end` is never handled before the
+/// frames that came ahead of it.
+pub enum Incoming {
+    Control(ControlMessage),
+    Audio {
+        stream_id: u16,
+        sequence: u32,
+        payload: Vec<u8>,
+    },
 }
 
 pub struct Framer {
@@ -47,7 +62,19 @@ impl Framer {
 
     /// Feeds bytes from the port and returns every robot control message they completed.
     /// A damaged or oversized segment is dropped through the next delimiter and counted.
+    #[cfg(test)]
     pub fn push(&mut self, bytes: &[u8]) -> Vec<ControlMessage> {
+        self.push_all(bytes)
+            .into_iter()
+            .filter_map(|item| match item {
+                Incoming::Control(message) => Some(message),
+                Incoming::Audio { .. } => None,
+            })
+            .collect()
+    }
+
+    /// Like `push`, and also returns robot audio frames, in arrival order.
+    pub fn push_all(&mut self, bytes: &[u8]) -> Vec<Incoming> {
         let mut messages = Vec::new();
         for &byte in bytes {
             let Some(result) = self.decoder.push(byte) else {
@@ -68,7 +95,7 @@ impl Framer {
         stats: &mut Stats,
         next_rx: &mut Option<u32>,
         frame: Frame<'_>,
-        messages: &mut Vec<ControlMessage>,
+        messages: &mut Vec<Incoming>,
     ) {
         match frame.kind {
             FrameKind::Control => {
@@ -79,14 +106,18 @@ impl Framer {
                 match serde_json::from_slice::<ControlMessage>(frame.payload) {
                     Ok(message) if message.sender() == Peer::Robot => {
                         stats.frames_ok += 1;
-                        messages.push(message);
+                        messages.push(Incoming::Control(message));
                     }
                     Ok(_) => stats.wrong_sender += 1,
                     // Unknown names, unknown fields, wrong kinds and bad numbers all end here.
                     Err(_) => stats.malformed_json += 1,
                 }
             }
-            FrameKind::RobotAudio => stats.audio_frames_ignored += 1,
+            FrameKind::RobotAudio => messages.push(Incoming::Audio {
+                stream_id: frame.stream_id,
+                sequence: frame.sequence,
+                payload: frame.payload.to_vec(),
+            }),
             // Only the desktop sends this kind.
             FrameKind::DesktopAudio => stats.wrong_sender += 1,
         }
@@ -233,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn robot_audio_is_counted_and_dropped() {
+    fn robot_audio_is_returned_in_order_and_not_counted_as_control() {
         let mut framer = Framer::new();
         let mut wire = vec![0; MAX_WIRE_LEN];
         let n = Frame {
@@ -244,8 +275,16 @@ mod tests {
         }
         .encode(&mut wire)
         .unwrap();
+        let items = framer.push_all(&wire[..n]);
+        assert!(matches!(
+            items[..],
+            [Incoming::Audio {
+                stream_id: 7,
+                sequence: 0,
+                ..
+            }]
+        ));
         assert!(framer.push(&wire[..n]).is_empty());
-        assert_eq!(framer.stats.audio_frames_ignored, 1);
     }
 
     #[test]
