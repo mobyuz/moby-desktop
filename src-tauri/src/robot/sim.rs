@@ -331,6 +331,12 @@ impl SimRobot {
         self.next_fault = fault;
     }
 
+    /// The face the robot shows right now.
+    #[cfg(test)]
+    pub fn current_face(&self) -> Expression {
+        self.effective()
+    }
+
     #[cfg(test)]
     pub fn is_streaming(&self) -> bool {
         self.talk.is_some()

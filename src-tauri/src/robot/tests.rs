@@ -1209,17 +1209,17 @@ fn the_robot_face_follows_what_the_desktop_asks_for() {
         .command(Command::Face(Expression::Thinking, 0))
         .unwrap();
     rig.run(300);
-    assert_eq!(rig.snap().expression, Expression::Thinking);
+    assert_eq!(rig.sim(|robot| robot.current_face()), Expression::Thinking);
     rig.sup
         .command(Command::Face(Expression::Speaking, 0))
         .unwrap();
     rig.run(300);
-    assert_eq!(rig.snap().expression, Expression::Speaking);
+    assert_eq!(rig.sim(|robot| robot.current_face()), Expression::Speaking);
     rig.sup
         .command(Command::Face(Expression::Happy, 1_000))
         .unwrap();
     rig.run(300);
-    assert_eq!(rig.snap().expression, Expression::Happy);
+    assert_eq!(rig.sim(|robot| robot.current_face()), Expression::Happy);
     // The mute switch outranks it: nothing is sent while muted.
     let now = rig.now();
     rig.sim(|robot| robot.set_mute(now, true));
@@ -1336,5 +1336,5 @@ fn the_whole_chain_runs_from_the_simulated_robot_through_stub_speech_services() 
         rig.sup.command(Command::Face(expression, hold)).unwrap();
         rig.run(200);
     }
-    assert_eq!(rig.snap().expression, Expression::Happy);
+    assert_eq!(rig.sim(|robot| robot.current_face()), Expression::Happy);
 }
