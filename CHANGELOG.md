@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Voice chain (stage D4): hold Moby's talk button, and the app checks the audio frame by frame, sends it to the speech service only after you turned voice on, runs the usual agent turn (tools and confirmations unchanged), and reads the answer on this computer's speakers. Voice is off until you accept, you can turn it off at once, and Stop cancels any stage. A lost frame, an overrun, a cut-off stream or the mute switch ends the turn with a clear message. Audio and spoken words are never logged or written to disk. Tested against a simulator and a stub server; **not tried with a real robot, speech service or sound device**; latency and speech quality are unmeasured. Development builds also have a PC-microphone path with a visible "MIC ON" bar; release builds do not contain it. See [ADR 0007](docs/adr/0007-voice-chain.md).
+
 - Robot link over USB (stage D3): connect to Moby, answer its hello, keep the session alive, pair with the talk button, and show connected, muted, pairing and error states with the face following the robot. Tested against a built-in simulator; **not yet tried on a real robot**. A **Robot** page shows status, pairing and paired robots, and in development builds a panel drives the simulator.
 - Safe local tools: Moby can read a registered project's Git status (in process, without starting `git`), search its file names, create reminders with a Windows notification, and, after you confirm on screen, open a program or a project. The agent loop moved into Rust, so the interface can only approve or deny a dialog Rust opened.
 - **Tools and projects** and **Activity** pages, an in-page dialog for reminders that starts on Deny, read permissions you can revoke, and a working activity log that stores decisions only.

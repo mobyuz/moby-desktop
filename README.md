@@ -66,9 +66,10 @@ Early development. Features appear in the app once they work end to end.
 | Tokens in the Windows Credential Manager | ✅ |
 | Text chat with `/v1/agent/turn` | ✅ |
 | Profile, usage, signed-in computers, data export, account deletion | ✅ |
-| Google sign-in, voice (`/v1/voice`) | 🔜 |
+| Google sign-in | 🔜 |
+| Voice chain: robot push-to-talk, consent, speech to text, agent, text to speech, playback on this computer (tested against a simulator and a stub server, **not with a robot, a real speech service or a sound device**) | ✅ |
 | USB robot link: connect, pairing, status, reconnect (tested against a simulator, **not on a real robot**) | ✅ |
-| Audio streaming over USB | 🔜 |
+| Robot speaker playback, wake word | 🔜 |
 | Safe local tools with approvals: `git_status`, `open_app`, `open_project`, `search_files`, `create_reminder` | ✅ |
 | Local history in SQLite, per account, with retention and delete-all | ✅ |
 | Registered folders and programs, read grants, approval dialog, activity log, reminders | ✅ |
@@ -115,6 +116,7 @@ The interface is black and white, in light and dark themes that you can pick und
 | `src-tauri/src/agent.rs` | The agent turn: request, stream, tool loop, approvals |
 | `src-tauri/src/tools/` | `git_status`, `search_files`, program launch, and the checks in front of them |
 | `src-tauri/src/robot/` | The USB link to Moby: framing, session, pairing, reconnect, and (development builds only) a simulator |
+| `src-tauri/src/voice/` | The voice chain, consent, playback, and (development builds only) the PC microphone |
 | `src-tauri/src/paths.rs` | Windows path hardening |
 | `src-tauri/src/registry.rs`, `grants.rs`, `scheduler.rs` | Registered folders and programs, grants, activity log, reminders |
 | `src-tauri/migrations/` | Versioned SQL schema steps |
