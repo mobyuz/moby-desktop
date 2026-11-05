@@ -917,7 +917,8 @@ async fn real_api_end_to_end() {
         format!("{} / {:?}", code_of(&refused), status("/v1/voice/tts")),
     );
 
-    let accepted = voice.accept_consent(&api, &store).await;
+    let yes = crate::confirm::testing::Scripted::new(&[true]);
+    let accepted = voice.accept_consent(&api, &store, &yes).await;
     r.check(
         matches!(&accepted, Ok(c) if c.accepted && c.version.as_deref() == Some("dev-1")),
         "accept_consent records version dev-1 (read from GET /v1/consents)",

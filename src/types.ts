@@ -154,6 +154,7 @@ export type RobotPhase =
   | "key_rejected"
   | "vault_unavailable"
   | "pairing_reset"
+  | "unproven"
   | "ready";
 
 export type PairStep = "starting" | "press_button" | "saving";

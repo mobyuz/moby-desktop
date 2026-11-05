@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use moby_protocol::usb::{
-    ControlMessage, Frame, FrameDecoder, FrameError, FrameKind, MAX_WIRE_LEN, Nonce, PairKey,
+    ControlMessage, Frame, FrameDecoder, FrameError, FrameKind, MAX_WIRE_LEN, Nonce, PairKey, Proof,
 };
 use moby_protocol::{Expression, PROTOCOL_VERSION, StableId, can_transition};
 use serde_json::{Value, json};
@@ -44,6 +44,28 @@ enum State {
     Listening,
     Thinking,
     Speaking,
+}
+
+/// How the simulated robot answers the desktop's proof with its own `session_proof`. The firmware
+/// sends it as the first event after it verified the desktop proof, before `mute_changed` and
+/// before any audio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub enum ProofFault {
+    /// A correct proof.
+    None,
+    /// The robot never sends one.
+    NoProof,
+    /// 32 bytes that are not the HMAC.
+    Wrong,
+    /// Computed with a desktop nonce other than the one it was sent.
+    WrongNonce,
+    /// The desktop's own proof from `hello_ack`, sent back as the robot's.
+    Reflect,
+    /// A correct proof, but this many milliseconds after the ack.
+    Late(u64),
+    /// The proof of the previous session, sent again on this one.
+    Replay,
 }
 
 /// A way for the next push-to-talk stream to go wrong. `at` counts frames from 0.
@@ -144,6 +166,11 @@ pub struct SimRobot {
     out: VecDeque<u8>,
     error_sent_at: Option<u64>,
     corrupt_next: u32,
+    proof_fault: ProofFault,
+    last_proof: Option<Proof>,
+    late_proof: Option<(u64, Proof)>,
+    /// A device that copied the robot's ID and claims to be paired but holds no key.
+    forger: bool,
     talk: Option<Talk>,
     next_fault: StreamFault,
     next_stream_id: u16,
@@ -192,6 +219,10 @@ impl SimRobot {
             out: VecDeque::new(),
             error_sent_at: None,
             corrupt_next: 0,
+            proof_fault: ProofFault::None,
+            last_proof: None,
+            late_proof: None,
+            forger: false,
             talk: None,
             next_fault: StreamFault::None,
             next_stream_id: 1,
@@ -211,6 +242,26 @@ impl SimRobot {
     /// Capabilities the hello advertises. `usb_pcm` turns on the push-to-talk stream.
     pub fn with_capabilities(mut self, capabilities: &[&'static str]) -> Self {
         self.capabilities = capabilities.to_vec();
+        self
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn set_proof_fault(&mut self, fault: ProofFault) {
+        self.proof_fault = fault;
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn with_proof_fault(mut self, fault: ProofFault) -> Self {
+        self.proof_fault = fault;
+        self
+    }
+
+    /// A hostile device: it copies the robot's device ID, says it is paired, answers every command
+    /// with `command_ok`, and sends audio when a button is pressed. It has no key, so it cannot
+    /// prove anything.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn forger(mut self) -> Self {
+        self.forger = true;
         self
     }
 
@@ -665,6 +716,11 @@ impl SimRobot {
             }
             return;
         }
+        if self.late_proof.as_ref().is_some_and(|(at, _)| now >= *at)
+            && let Some((_, proof)) = self.late_proof.take()
+        {
+            self.event("session_proof", json!({"proof": proof.as_str()}));
+        }
         self.advance_stream(now);
         if now >= self.next_heartbeat {
             if self.unanswered >= LIVENESS_MISSED {
@@ -727,7 +783,7 @@ impl SimRobot {
             "data": {
                 "device_id": self.device_id, "hw_rev": "sim-r1", "fw_version": "0.0.0-sim",
                 "protocol_version": self.protocol_version, "capabilities": self.capabilities,
-                "mute": self.muted, "paired": self.key.is_some(), "nonce": nonce.as_str(),
+                "mute": self.muted, "paired": self.key.is_some() || self.forger, "nonce": nonce.as_str(),
             }
         });
         self.send_value(&value);
@@ -895,19 +951,36 @@ impl SimRobot {
             self.protocol_error("E_BAD_FRAME", "hello_ack without session_id");
             return;
         };
+        let robot_nonce = Nonce::from_bytes(self.nonce);
+        let device = StableId::new(self.device_id.clone());
+        // Like the firmware: the desktop proof must verify, and without a `desktop_nonce` the
+        // robot cannot make its own proof, so it does not call the session authenticated.
         let proven = match &self.key {
             None => true,
-            Some(key) => match (&ack.proof, StableId::new(self.device_id.clone())) {
-                (Some(proof), Ok(device)) => key.verify_session_proof(
-                    &Nonce::from_bytes(self.nonce),
-                    &device,
-                    session_id,
-                    proof,
-                ),
+            Some(key) => match (&ack.proof, &ack.desktop_nonce, &device) {
+                (Some(proof), Some(_), Ok(device)) => {
+                    key.verify_session_proof(&robot_nonce, device, session_id, proof)
+                }
                 _ => false,
             },
         };
-        self.authenticated = self.key.is_some() && proven;
+        self.authenticated = (self.key.is_some() && proven) || self.forger;
+        let robot_proof = match (&self.key, &ack.desktop_nonce, &device) {
+            (Some(key), Some(desktop_nonce), Ok(device)) if proven => {
+                let mut raw = desktop_nonce.to_bytes();
+                if self.proof_fault == ProofFault::WrongNonce {
+                    // Right key and session, but not the nonce it was sent.
+                    raw[0] ^= 0x01;
+                }
+                Some(key.robot_session_proof(
+                    &Nonce::from_bytes(raw),
+                    &robot_nonce,
+                    device,
+                    session_id,
+                ))
+            }
+            _ => None,
+        };
         self.established = true;
         self.hello_open = false;
         self.session_id = session_id.as_str().to_owned();
@@ -917,12 +990,35 @@ impl SimRobot {
         self.face = Expression::Idle;
         self.state = State::Idle;
         self.stats.sessions_started += 1;
+        // The robot's proof is the first event after the ack, before anything else.
+        if let Some(proof) = robot_proof {
+            self.send_robot_proof(proof, ack);
+        }
         self.event(
             "mute_changed",
             json!({"muted": self.muted, "source": "boot"}),
         );
         if !proven {
             self.raise_error("E_STATE", "authentication failed");
+        }
+    }
+
+    fn send_robot_proof(&mut self, proof: Proof, ack: &moby_protocol::usb::HelloAck) {
+        let previous = self.last_proof.replace(proof.clone());
+        let to_send = match self.proof_fault {
+            ProofFault::None => Some(proof),
+            ProofFault::NoProof => None,
+            ProofFault::Wrong => Some(Proof::from_bytes([0x11; 32])),
+            ProofFault::WrongNonce => Some(proof),
+            ProofFault::Reflect => ack.proof.clone(),
+            ProofFault::Late(ms) => {
+                self.late_proof = Some((self.now + ms, proof));
+                None
+            }
+            ProofFault::Replay => previous.or(Some(proof)),
+        };
+        if let Some(proof) = to_send {
+            self.event("session_proof", json!({"proof": proof.as_str()}));
         }
     }
 

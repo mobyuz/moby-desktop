@@ -1421,3 +1421,494 @@ fn text_from_the_robot_loses_bidi_and_zero_width_characters() {
         "Moby board"
     );
 }
+
+// ---- two-way proof (D4 review, owner decision of 2026-11-05) -------------------------------
+
+use super::sim::ProofFault;
+use moby_protocol::usb::{Nonce, Proof};
+
+fn nonce(hex: &str) -> Nonce {
+    Nonce::try_from(hex.to_owned()).unwrap()
+}
+
+fn hello_caps(id: &str, paired: bool, robot_nonce: &str) -> serde_json::Value {
+    json!({
+        "v":1,"kind":"event","name":"hello","id":id,"ts_ms":1,
+        "data":{"device_id":DEVICE,"hw_rev":"r1","fw_version":"0.3.0",
+                "protocol_version":1,"capabilities":["usb_pcm"],"mute":false,"paired":paired,
+                "nonce":robot_nonce}
+    })
+}
+
+/// What the robot needs, taken from the hello_ack the desktop sent, to make a proof of its own.
+struct Handshake {
+    session_id: StableId,
+    desktop_nonce: Nonce,
+    robot_nonce: Nonce,
+}
+
+impl Handshake {
+    fn hello(session: &mut Session, hello_id: &str, robot_nonce: &str, at: u64) -> Self {
+        session.on_message(at, &robot_message(hello_caps(hello_id, true, robot_nonce)));
+        let ack = session.take_outgoing(at).remove(0);
+        let ControlMessage::HelloAck { data, .. } = ack else {
+            panic!("a hello_ack");
+        };
+        assert!(data.proof.is_some(), "the desktop proof goes out");
+        Self {
+            session_id: data.session_id.unwrap(),
+            desktop_nonce: data
+                .desktop_nonce
+                .expect("a desktop nonce goes with the proof"),
+            robot_nonce: nonce(robot_nonce),
+        }
+    }
+
+    fn proof(&self) -> Proof {
+        key(7).robot_session_proof(
+            &self.desktop_nonce,
+            &self.robot_nonce,
+            &StableId::new(DEVICE).unwrap(),
+            &self.session_id,
+        )
+    }
+}
+
+fn send_proof(session: &mut Session, at: u64, proof: &Proof) {
+    session.on_message(
+        at,
+        &robot_message(event_json(
+            "e-p",
+            "session_proof",
+            json!({"proof": proof.as_str()}),
+        )),
+    );
+}
+
+fn keyed_session() -> Session {
+    let pairings: Arc<dyn PairingStore> = Arc::new(MemoryPairings::with_key(DEVICE, key(7)));
+    Session::new(pairings, Box::new(SeqRandom(0)), 1_000)
+}
+
+fn heartbeat_at(session: &mut Session, id: &str, at: u64) {
+    session.on_message(
+        at,
+        &robot_message(event_json(
+            id,
+            "heartbeat",
+            json!({"state":"idle","mute":false,"uptime_ms":1}),
+        )),
+    );
+}
+
+const ROBOT_NONCE: &str = "00112233445566778899aabbccddeeff";
+
+#[test]
+fn a_valid_robot_proof_is_the_only_way_to_authenticate() {
+    let mut session = keyed_session();
+    let shake = Handshake::hello(&mut session, "e-1", ROBOT_NONCE, 1_000);
+    assert!(!session.audio_allowed(), "not before the proof");
+    assert_eq!(session.snapshot().phase, Phase::Connecting);
+    // A keepalive answered with command_ok proves nothing: any device can say it.
+    session.tick(2_100);
+    let keepalive = session.take_outgoing(2_100).remove(0);
+    session.on_message(
+        2_150,
+        &robot_message(json!({"v":1,"kind":"response","name":"command_ok",
+                              "id":keepalive.id().as_str(),"ts_ms":2,"data":{}})),
+    );
+    assert!(!session.audio_allowed());
+    assert_eq!(session.snapshot().phase, Phase::Connecting);
+    send_proof(&mut session, 2_200, &shake.proof());
+    assert!(session.audio_allowed());
+    assert_eq!(session.snapshot().phase, Phase::Ready);
+}
+
+#[test]
+fn only_the_first_proof_counts_and_a_bad_one_is_final() {
+    let mut session = keyed_session();
+    let shake = Handshake::hello(&mut session, "e-1", ROBOT_NONCE, 1_000);
+    send_proof(&mut session, 1_100, &Proof::from_bytes([9; 32]));
+    assert_eq!(session.snapshot().phase, Phase::Unproven);
+    send_proof(&mut session, 1_200, &shake.proof());
+    assert_eq!(
+        session.snapshot().phase,
+        Phase::Unproven,
+        "the good one came second"
+    );
+    assert!(!session.audio_allowed());
+    assert!(session.unexpected >= 1);
+}
+
+#[test]
+fn a_second_proof_after_a_good_one_changes_nothing() {
+    let mut session = keyed_session();
+    let shake = Handshake::hello(&mut session, "e-1", ROBOT_NONCE, 1_000);
+    send_proof(&mut session, 1_100, &shake.proof());
+    send_proof(&mut session, 1_200, &Proof::from_bytes([9; 32]));
+    assert!(session.audio_allowed());
+}
+
+#[test]
+fn no_proof_within_three_seconds_leaves_the_robot_unproven_with_a_clear_message() {
+    let mut session = keyed_session();
+    let shake = Handshake::hello(&mut session, "e-1", ROBOT_NONCE, 1_000);
+    heartbeat_at(&mut session, "e-h", 3_900);
+    session.tick(3_900);
+    assert_eq!(
+        session.snapshot().phase,
+        Phase::Connecting,
+        "still inside the window"
+    );
+    heartbeat_at(&mut session, "e-h2", 4_100);
+    session.tick(4_100);
+    let snap = session.snapshot();
+    assert_eq!(snap.phase, Phase::Unproven);
+    assert!(snap.message.unwrap().contains("could not prove"));
+    // Too late is too late.
+    send_proof(&mut session, 4_200, &shake.proof());
+    assert!(!session.audio_allowed());
+}
+
+#[test]
+fn a_proof_from_an_old_session_is_no_use_on_a_new_one() {
+    let mut session = keyed_session();
+    let old = Handshake::hello(&mut session, "e-1", ROBOT_NONCE, 1_000);
+    let recorded = old.proof();
+    // A new connection: new session ID and a new desktop nonce, even with the same robot nonce.
+    let new = Handshake::hello(&mut session, "e-2", ROBOT_NONCE, 2_000);
+    assert_ne!(
+        old.desktop_nonce, new.desktop_nonce,
+        "a fresh desktop nonce for every ack"
+    );
+    assert_ne!(old.session_id, new.session_id);
+    send_proof(&mut session, 2_100, &recorded);
+    assert_eq!(session.snapshot().phase, Phase::Unproven);
+    assert!(!session.audio_allowed());
+}
+
+#[test]
+fn a_proof_where_none_was_asked_for_is_a_violation() {
+    // An unpaired robot got no desktop nonce, so it has nothing to prove.
+    let pairings: Arc<dyn PairingStore> = Arc::new(MemoryPairings::default());
+    let mut session = Session::new(pairings, Box::new(SeqRandom(0)), 1_000);
+    session.on_message(1_000, &robot_message(hello_caps("e-1", false, ROBOT_NONCE)));
+    let ack = session.take_outgoing(1_000).remove(0);
+    let ControlMessage::HelloAck { data, .. } = ack else {
+        panic!()
+    };
+    assert!(data.proof.is_none() && data.desktop_nonce.is_none());
+    send_proof(&mut session, 1_100, &Proof::from_bytes([1; 32]));
+    assert_eq!(session.snapshot().phase, Phase::Unproven);
+    assert_eq!(session.unexpected, 1);
+}
+
+#[test]
+fn e_state_on_a_keepalive_means_the_robot_did_not_accept_our_proof() {
+    let mut session = keyed_session();
+    let _shake = Handshake::hello(&mut session, "e-1", ROBOT_NONCE, 1_000);
+    session.tick(2_100);
+    let keepalive = session.take_outgoing(2_100).remove(0);
+    session.on_message(
+        2_150,
+        &robot_message(json!({"v":1,"kind":"response","name":"command_error",
+                              "id":keepalive.id().as_str(),"ts_ms":2,
+                              "data":{"code":"E_STATE","detail":"not authenticated"}})),
+    );
+    assert_eq!(session.snapshot().phase, Phase::KeyRejected);
+    assert!(!session.audio_allowed());
+}
+
+#[test]
+fn each_ack_gets_a_fresh_nonce_from_the_random_source() {
+    let mut session = keyed_session();
+    let mut seen = Vec::new();
+    for n in 0..5_u64 {
+        let shake = Handshake::hello(
+            &mut session,
+            &format!("e-{n}"),
+            ROBOT_NONCE,
+            1_000 + n * 1_000,
+        );
+        seen.push(shake.desktop_nonce.as_str().to_owned());
+    }
+    seen.sort();
+    seen.dedup();
+    assert_eq!(seen.len(), 5);
+}
+
+#[test]
+fn the_protocols_robot_proof_vectors_pass_through_the_desktops_check() {
+    let mut checked = 0;
+    for fields in rows(include_str!(
+        "../../../../moby-protocol/tests/fixtures/robot-proof-vectors.tsv"
+    )) {
+        let [
+            name,
+            key_hex,
+            desktop_hex,
+            robot_hex,
+            device,
+            session,
+            _input,
+            proof_hex,
+        ] = fields[..]
+        else {
+            panic!("bad row {fields:?}");
+        };
+        let pair_key = PairKey::try_from(key_hex.to_owned()).unwrap();
+        let (dn, rn) = (nonce(desktop_hex), nonce(robot_hex));
+        let (device, session) = (
+            StableId::new(device).unwrap(),
+            StableId::new(session).unwrap(),
+        );
+        let proof = Proof::try_from(proof_hex.to_owned()).unwrap();
+        let valid = |a: &Nonce, b: &Nonce| {
+            super::session::robot_proof_is_valid(&pair_key, a, b, &device, &session, &proof)
+        };
+        assert!(valid(&dn, &rn), "{name}");
+        // With the two nonces the other way round it fails, unless they are equal.
+        if dn != rn {
+            assert!(!valid(&rn, &dn), "{name}");
+        }
+        checked += 1;
+    }
+    assert!(checked >= 3);
+}
+
+#[test]
+fn the_protocols_reflection_vectors_cannot_be_passed_off_as_a_robot_proof() {
+    let label_len = b"moby-robot-proof-v1".len();
+    let mut checked = 0;
+    for fields in rows(include_str!(
+        "../../../../moby-protocol/tests/fixtures/reflection-vectors.tsv"
+    )) {
+        let [
+            name,
+            key_hex,
+            _desktop_input,
+            desktop_proof,
+            robot_input,
+            robot_proof,
+            _first,
+        ] = fields[..]
+        else {
+            panic!("bad row {fields:?}");
+        };
+        let pair_key = PairKey::try_from(key_hex.to_owned()).unwrap();
+        // Take the nonces and IDs back out of the robot input: label, 0, two nonces, device, 0, session.
+        let bytes = hex(robot_input);
+        let body = &bytes[label_len + 1..];
+        let to_hex = |raw: &[u8]| raw.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let (dn, rn) = (nonce(&to_hex(&body[..16])), nonce(&to_hex(&body[16..32])));
+        let ids: Vec<&[u8]> = body[32..].split(|b| *b == 0).collect();
+        let device = StableId::new(String::from_utf8(ids[0].to_vec()).unwrap()).unwrap();
+        let session = StableId::new(String::from_utf8(ids[1].to_vec()).unwrap()).unwrap();
+        let good = Proof::try_from(robot_proof.to_owned()).unwrap();
+        let reflected = Proof::try_from(desktop_proof.to_owned()).unwrap();
+        let check = |proof: &Proof| {
+            super::session::robot_proof_is_valid(&pair_key, &dn, &rn, &device, &session, proof)
+        };
+        assert!(check(&good), "{name}");
+        assert!(
+            !check(&reflected),
+            "{name}: the desktop proof is not a robot proof"
+        );
+        checked += 1;
+    }
+    assert!(checked >= 3);
+}
+
+// ---- the simulator, with and without proof -----------------------------------------------
+
+fn proof_rig(robot: SimRobot, desktop_key: Option<u8>) -> (Rig, Heard) {
+    let heard: Heard = Arc::new(Mutex::new(Vec::new()));
+    let sink: AudioSink = {
+        let heard = Arc::clone(&heard);
+        Arc::new(move |event| {
+            heard
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(event);
+        })
+    };
+    let pairings = match desktop_key {
+        Some(byte) => MemoryPairings::with_key(DEVICE, key(byte)),
+        None => MemoryPairings::default(),
+    };
+    let mut rig = rig_with_audio(robot, pairings, sink);
+    rig.connect();
+    (rig, heard)
+}
+
+fn audio_robot() -> SimRobot {
+    SimRobot::new(DEVICE)
+        .with_key(key(7))
+        .with_capabilities(&["usb_pcm"])
+}
+
+#[test]
+fn a_robot_that_proves_itself_is_ready_and_talks() {
+    let (mut rig, heard) = proof_rig(audio_robot(), Some(7));
+    rig.run(2_500);
+    assert_eq!(rig.snap().phase, Phase::Ready);
+    talk(&mut rig, 800);
+    assert!(summary(&heard).last().unwrap().starts_with("utterance:"));
+}
+
+#[test]
+fn robots_that_do_not_prove_the_key_are_unproven_and_get_no_audio() {
+    let cases = [
+        ("no proof", ProofFault::NoProof),
+        ("wrong proof", ProofFault::Wrong),
+        ("wrong nonce", ProofFault::WrongNonce),
+        ("reflected desktop proof", ProofFault::Reflect),
+        ("late proof", ProofFault::Late(4_000)),
+        ("replayed proof", ProofFault::Replay),
+    ];
+    for (name, fault) in cases {
+        let (mut rig, heard) = proof_rig(audio_robot().with_proof_fault(fault), Some(7));
+        if fault == ProofFault::Replay {
+            // First an honest session to record a proof from, then a new connection that replays it.
+            rig.sim(|robot| robot.set_proof_fault(ProofFault::None));
+            rig.run(2_500);
+            assert_eq!(
+                rig.snap().phase,
+                Phase::Ready,
+                "{name}: the first one is honest"
+            );
+            rig.sim(|robot| robot.set_proof_fault(ProofFault::Replay));
+            rig.sup.command(Command::Disconnect).unwrap();
+            rig.run(100);
+            rig.connect();
+        }
+        rig.run(4_200);
+        let snap = rig.snap();
+        assert_eq!(snap.phase, Phase::Unproven, "{name}");
+        assert!(snap.message.unwrap().contains("could not prove"), "{name}");
+        // The button is pressed, a hostile robot streams anyway, and nothing is kept.
+        talk(&mut rig, 600);
+        assert!(
+            summary(&heard)
+                .iter()
+                .all(|e| !e.starts_with("utterance") && e != "started"),
+            "{name}: {:?}",
+            summary(&heard)
+        );
+        assert_eq!(rig.snap().stats.audio_streams, 0, "{name}");
+    }
+}
+
+#[test]
+fn a_proof_that_arrives_inside_the_window_but_late_still_counts() {
+    let (mut rig, _heard) = proof_rig(
+        audio_robot().with_proof_fault(ProofFault::Late(1_000)),
+        Some(7),
+    );
+    rig.run(2_600);
+    assert_eq!(rig.snap().phase, Phase::Ready);
+}
+
+#[test]
+fn a_forged_device_with_the_real_id_that_answers_keepalives_and_sends_audio_reaches_nothing() {
+    use crate::agent::Agent;
+    use crate::confirm::testing::Scripted;
+    use crate::voice::play::fake::FakeSpeaker;
+    use crate::voice::testing::{FakeRobot, Stub};
+    use crate::voice::{Deps, Voice};
+
+    let forger = SimRobot::new(DEVICE)
+        .with_capabilities(&["usb_pcm"])
+        .forger();
+    let (mut rig, heard) = proof_rig(forger, Some(7));
+    rig.run(3_600);
+    assert_eq!(rig.snap().phase, Phase::Unproven, "it never proved the key");
+    // It answers every keepalive with command_ok and streams audio when "pressed".
+    talk(&mut rig, 1_200);
+    assert!(
+        rig.sim(|robot| robot.stats.frames_sent) > 0,
+        "the forger did send audio frames"
+    );
+    assert_eq!(rig.snap().stats.audio_streams, 0);
+
+    // Everything the link handed on goes through the real voice chain, with a stub server.
+    let scratch = crate::paths::testing::Scratch::new();
+    let store = crate::store::Store::open(&scratch.path("data"));
+    store
+        .with(|db| db.set_voice_consent(Some(("alice", "dev-1")), 1))
+        .unwrap();
+    let stub = Stub::new();
+    let api = crate::api::Api::signed_in_for_test(&stub.url, "alice");
+    let agent = Agent::with_timeouts(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_secs(5),
+        Arc::new(Scripted::new(&[])),
+    );
+    let (robot, speaker, voice) = (FakeRobot::default(), FakeSpeaker::default(), Voice::new());
+    let deps = Deps {
+        api: &api,
+        store: &store,
+        agent: &agent,
+        speaker: &speaker,
+        robot: &robot,
+    };
+    let events: Vec<AudioEvent> = std::mem::take(&mut *heard.lock().unwrap());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        for event in events {
+            voice.handle_event(&deps, event).await;
+        }
+        // The page never gets words to continue, because none were heard.
+        assert!(voice.view().pending.is_none());
+    });
+    assert_eq!(
+        stub.requests().len(),
+        0,
+        "no STT, no agent turn, no request of any kind"
+    );
+    assert_eq!(stub.connections(), 0);
+    assert!(speaker.played.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_hello_that_says_unpaired_for_an_id_whose_key_is_saved_is_stale_not_new() {
+    // The desktop holds a key for this ID; the device says it is unpaired.
+    let robot = SimRobot::new(DEVICE).with_capabilities(&["usb_pcm"]);
+    let (mut rig, _heard) = proof_rig(robot, Some(7));
+    rig.run(2_000);
+    assert_eq!(rig.snap().phase, Phase::PairingReset);
+    assert!(rig.pairings.has_key(DEVICE), "no key was deleted");
+    let names = rig.received_names();
+    assert!(
+        !names.contains(&"pair_set_key".to_owned()) && !names.contains(&"pair_begin".to_owned()),
+        "no key was offered to it"
+    );
+}
+
+#[test]
+fn pairing_finishes_and_the_link_starts_over_so_voice_is_ready_on_a_proven_session() {
+    let robot = SimRobot::new(DEVICE).with_capabilities(&["usb_pcm"]);
+    let (mut rig, heard) = proof_rig(robot, None);
+    rig.run(500);
+    assert_eq!(rig.snap().phase, Phase::Unpaired);
+    rig.sup.command(Command::BeginPairing).unwrap();
+    rig.run(300);
+    rig.press();
+    rig.run(3_500);
+    assert!(rig.pairings.has_key(DEVICE));
+    assert_eq!(
+        rig.sim(|robot| robot.stats.sessions_started),
+        2,
+        "a second session started right away"
+    );
+    assert_eq!(
+        rig.snap().phase,
+        Phase::Ready,
+        "proven on the second session"
+    );
+    talk(&mut rig, 800);
+    assert!(summary(&heard).last().unwrap().starts_with("utterance:"));
+}

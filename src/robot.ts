@@ -32,7 +32,7 @@ export const NO_ROBOT: RobotSnapshot = {
 };
 
 /** The robot has said hello and is talking, so its face and its mute switch mean something. */
-const LIVE: readonly RobotPhase[] = ["unpaired", "pairing", "foreign_paired", "key_rejected", "vault_unavailable", "pairing_reset", "ready"];
+const LIVE: readonly RobotPhase[] = ["unpaired", "pairing", "foreign_paired", "key_rejected", "vault_unavailable", "pairing_reset", "unproven", "ready"];
 
 export function isLive(robot: RobotSnapshot): boolean {
   return LIVE.includes(robot.phase);
@@ -47,7 +47,7 @@ export function robotStatus(robot: RobotSnapshot): RobotStatus {
   }
   if (robot.muted) return "muted";
   if (robot.phase === "pairing") return "pairing";
-  if (robot.phase === "pairing_reset" || robot.phase === "key_rejected" || robot.phase === "vault_unavailable" || robot.error !== null) return "error";
+  if (robot.phase === "pairing_reset" || robot.phase === "unproven" || robot.phase === "key_rejected" || robot.phase === "vault_unavailable" || robot.error !== null) return "error";
   return "connected";
 }
 
@@ -73,6 +73,7 @@ export function robotDetail(robot: RobotSnapshot): string {
     case "key_rejected":
     case "vault_unavailable":
     case "pairing_reset":
+    case "unproven":
       return robot.message ?? "";
     case "unpaired":
       return robot.muted ? "Not paired with this computer. The mute switch is on." : "Not paired with this computer yet.";

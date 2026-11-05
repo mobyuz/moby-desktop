@@ -237,6 +237,15 @@ impl Supervisor {
                     self.attempts = 0;
                 }
                 match outcome {
+                    Ok(()) if link.session.take_restart() => {
+                        // A pairing just finished. That session had no robot proof, so the link
+                        // starts over at once and the next session is a proven one.
+                        drop(link);
+                        self.state = State::Backoff {
+                            until: now,
+                            wait_ms: 0,
+                        };
+                    }
                     Ok(()) => self.state = State::Online(link),
                     Err(reason) => self.lost(reason, now),
                 }

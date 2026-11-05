@@ -31,7 +31,10 @@ pub enum Phase {
     /// The robot announced that its pairing was reset. The key saved here is kept, because
     /// any device on the port could send that message; the person decides whether to forget it.
     PairingReset,
-    /// Connected and authenticated.
+    /// The device on the port did not prove, within 3 s of our `hello_ack`, that it holds the
+    /// pairing key. Nothing it sends is used.
+    Unproven,
+    /// Connected, authenticated, and the robot proved it holds the key.
     Ready,
 }
 

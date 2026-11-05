@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 use moby_protocol::usb::{
     ActionDurationMs, AudioStreamId, Cancel, CommandKind, ControlMessage, ControlVersion,
-    DeviceConfig, ErrorCode, ErrorInfo, Hello, PairBegin, PairKey, PairSetKey, PairTimeoutMs,
-    SetExpression,
+    DeviceConfig, ErrorCode, ErrorInfo, Hello, Nonce, PairBegin, PairKey, PairSetKey,
+    PairTimeoutMs, Proof, SetExpression,
 };
 use moby_protocol::{Expression, PROTOCOL_VERSION, StableId};
 
@@ -42,6 +42,9 @@ const ERROR_SHOWN_MS: u64 = 5_000;
 /// A real robot repeats its hello once a second. A hello sooner than this after the last one that
 /// was handled is dropped, so a flood costs no Credential Manager read and no new session.
 const HELLO_MIN_GAP_MS: u64 = 500;
+/// How long the robot has, after our `hello_ack`, to send a valid `session_proof` (protocol,
+/// handshake step 5). The robot's own session timeout is about 8 s, so the desktop decides first.
+pub const PROOF_WINDOW_MS: u64 = 3_000;
 const MAX_PENDING: usize = 8;
 
 /// Capabilities the desktop needs to talk to a robot at all. None: a robot without `usb_pcm` (the
@@ -106,9 +109,37 @@ enum Auth {
     Proving,
     Authenticated,
     Rejected,
-    /// The robot said `pair_reset`. Nothing proves it was the robot, so the key stays here and
-    /// the session is not trusted (no audio) until the person forgets the key or pairs again.
+    /// The robot said `pair_reset`, or said `paired: false` while a key for it is saved here.
+    /// Nothing proves it was the robot, so the key stays and the session is not trusted (no audio)
+    /// until the person forgets the key or pairs again.
     Reset,
+    /// Nothing proved that the device holds the key: no valid `session_proof` in time, a wrong
+    /// one, one that should not exist, or a session that came from `pair_set_key`. No audio.
+    Unproven,
+}
+
+/// What a valid `session_proof` has to match: everything the proof covers, from this session only.
+/// It exists only while a `desktop_nonce` was sent and no proof has been judged yet, so only the
+/// first `session_proof` counts.
+struct ProofWait {
+    key: PairKey,
+    desktop_nonce: Nonce,
+    robot_nonce: Nonce,
+    device: StableId,
+    session: StableId,
+    deadline: u64,
+}
+
+/// Checks the robot's proof with the protocol's constant-time helper.
+pub(super) fn robot_proof_is_valid(
+    key: &PairKey,
+    desktop_nonce: &Nonce,
+    robot_nonce: &Nonce,
+    device: &StableId,
+    session: &StableId,
+    proof: &Proof,
+) -> bool {
+    key.verify_robot_session_proof(desktop_nonce, robot_nonce, device, session, proof)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,6 +193,9 @@ pub struct Session {
     stage: Stage,
     auth: Auth,
     pair: Pair,
+    proof_wait: Option<ProofWait>,
+    /// Set after `pair_set_key`: the session has no robot proof, so the link starts over.
+    restart: bool,
     pair_failure: Option<PairFailure>,
     device: Option<Device>,
     hello_id: Option<StableId>,
@@ -220,6 +254,8 @@ impl Session {
             stage: Stage::Waiting,
             auth: Auth::Unpaired,
             pair: Pair::Idle,
+            proof_wait: None,
+            restart: false,
             pair_failure: None,
             device: None,
             hello_id: None,
@@ -240,6 +276,13 @@ impl Session {
 
     pub fn established(&self) -> bool {
         self.stage == Stage::Established
+    }
+
+    /// True once after a pairing: the new key is saved and the robot holds it, but that session
+    /// carried no `desktop_nonce`, so the robot cannot be proven on it. The caller starts the
+    /// handshake over (protocol step 8).
+    pub fn take_restart(&mut self) -> bool {
+        std::mem::take(&mut self.restart)
     }
 
     /// The hardware mute, as the robot last reported it.
@@ -282,6 +325,7 @@ impl Session {
                     self.fail_pairing("muted");
                 }
             }
+            ControlMessage::SessionProof { data, .. } => self.on_session_proof(&data.proof),
             ControlMessage::Error { data, .. } => self.on_robot_error(now, data),
             ControlMessage::PairButtonConfirmed { .. } => self.on_button_confirmed(now),
             ControlMessage::PairReset { .. } => self.on_pair_reset(),
@@ -350,17 +394,51 @@ impl Session {
             Err(_) => (None, true),
         };
         let session_id = self.new_session_id();
-        // The proof exists only for a robot that reported `paired`, and only when we hold the key.
-        let ack = message.acknowledge_hello(Some(session_id), key.as_ref(), ts(now));
-        self.auth = if !hello.paired {
+        self.proof_wait = None;
+        self.restart = false;
+        // The desktop proof and a fresh `desktop_nonce` go out together, only to a robot that
+        // reported `paired` and only when we hold the key. The nonce comes from the operating
+        // system's generator for each ack and is never reused.
+        let mut proving = None;
+        if hello.paired
+            && let Some(key) = &key
+        {
+            let mut bytes = [0_u8; Nonce::BYTES];
+            if self.random.fill(&mut bytes) {
+                proving = Some((key.clone(), Nonce::from_bytes(bytes)));
+            }
+            bytes.fill(0);
+        }
+        let ack = message.acknowledge_hello(
+            Some(session_id.clone()),
+            proving.as_ref().map(|(key, nonce)| (key, nonce.clone())),
+            ts(now),
+        );
+        self.auth = if !hello.paired && key.is_some() {
+            // A device that says it is unpaired, with a key for its ID saved here: stale, not new.
+            Auth::Reset
+        } else if !hello.paired {
             Auth::Unpaired
-        } else if key.is_some() {
+        } else if proving.is_some() {
             Auth::Proving
+        } else if key.is_some() {
+            // We hold the key but could not make a nonce: nothing can be proven.
+            Auth::Unproven
         } else if vault_fault {
             Auth::VaultFault
         } else {
             Auth::NoKey
         };
+        if let Some((key, desktop_nonce)) = proving {
+            self.proof_wait = Some(ProofWait {
+                key,
+                desktop_nonce,
+                robot_nonce: hello.nonce.clone(),
+                device: hello.device_id.clone(),
+                session: session_id,
+                deadline: now + PROOF_WINDOW_MS,
+            });
+        }
         self.device = Some(Device {
             id: hello.device_id.clone(),
             hw_rev: hello.hw_rev.as_str().to_owned(),
@@ -424,6 +502,32 @@ impl Session {
         }
     }
 
+    /// The robot's `session_proof`. Only the first one counts, and only on a session where a
+    /// `desktop_nonce` was sent. Anything else is a protocol violation: the device is unproven.
+    fn on_session_proof(&mut self, proof: &Proof) {
+        let Some(wait) = self.proof_wait.take() else {
+            self.unexpected += 1;
+            // A second proof on a proven session is ignored; one where none was asked for, or
+            // after the first was judged bad, leaves the device unproven.
+            if self.auth != Auth::Authenticated {
+                self.auth = Auth::Unproven;
+            }
+            return;
+        };
+        if robot_proof_is_valid(
+            &wait.key,
+            &wait.desktop_nonce,
+            &wait.robot_nonce,
+            &wait.device,
+            &wait.session,
+            proof,
+        ) {
+            self.grant_authenticated();
+        } else {
+            self.auth = Auth::Unproven;
+        }
+    }
+
     /// The only place `Auth::Authenticated` is set. Today the robot is trusted once it accepted
     /// our proof (or took the new key). The owner decided on 2026-11-05 that the robot must prove
     /// itself to the desktop as well; when that exists, this function is where the check goes and
@@ -439,11 +543,9 @@ impl Session {
         };
         let pending = self.pending.remove(position);
         match (pending.kind, error) {
-            (PendingKind::Keepalive, None) => {
-                if self.auth == Auth::Proving {
-                    self.grant_authenticated();
-                }
-            }
+            // A `command_ok` proves nothing: any device can say it. Only a valid `session_proof`
+            // authenticates the robot.
+            (PendingKind::Keepalive, None) => {}
             (PendingKind::Keepalive, Some(info)) => {
                 if info.code == ErrorCode::State
                     && matches!(self.auth, Auth::Proving | Auth::Authenticated)
@@ -470,8 +572,13 @@ impl Session {
             (PendingKind::Fire, _) => {}
             (PendingKind::PairSetKey, None) => {
                 if matches!(self.pair, Pair::Saving { .. }) {
+                    // The robot holds the new key and calls this session authenticated, but the
+                    // session had no `desktop_nonce`, so the robot never proved itself. Unproven
+                    // for audio, and the link starts over so the next session is a proven one.
                     self.pair = Pair::Idle;
-                    self.grant_authenticated();
+                    self.auth = Auth::Unproven;
+                    self.proof_wait = None;
+                    self.restart = true;
                     if let Some(device) = &mut self.device {
                         device.paired_on_robot = true;
                         device.key_here = true;
@@ -533,6 +640,7 @@ impl Session {
         if self.pair != Pair::Idle {
             self.fail_pairing("interrupted");
         }
+        self.proof_wait = None;
         if let Some(device) = &mut self.device {
             device.paired_on_robot = false;
             if device.key_here {
@@ -692,6 +800,15 @@ impl Session {
         if now.saturating_sub(self.last_heartbeat) > HEARTBEAT_LOSS_MS {
             return Some(DropReason::HeartbeatLost);
         }
+        if self
+            .proof_wait
+            .as_ref()
+            .is_some_and(|wait| now >= wait.deadline)
+        {
+            // No valid session_proof within the window: the device did not prove the key.
+            self.proof_wait = None;
+            self.auth = Auth::Unproven;
+        }
         self.expire_pending(now);
         match self.pair {
             Pair::WaitButton { deadline } if now >= deadline => self.fail_pairing("timeout"),
@@ -840,7 +957,15 @@ impl Session {
                 Auth::Reset => (
                     Phase::PairingReset,
                     Some(
-                        "Moby says its pairing was reset. Its saved key is still on this computer, because anything plugged into the port could send that message. If you reset Moby yourself, choose Unpair below to forget the key, then pair again. Otherwise leave it."
+                        "This device says it is not paired (or that its pairing was reset), but a key for this Moby is saved on this computer. Anything plugged into the port can say that, so the key is kept and nothing it sends is used. If you reset Moby yourself, choose Unpair below to forget the key, then pair again. Otherwise leave it."
+                            .to_owned(),
+                    ),
+                ),
+                Auth::Unproven if self.restart => (Phase::Connecting, None),
+                Auth::Unproven => (
+                    Phase::Unproven,
+                    Some(
+                        "This device could not prove that it holds the pairing key, so Moby is not listening to it and nothing it sends is used. If this is your Moby, unplug it and plug it in again. If it keeps happening, unpair it and pair it again."
                             .to_owned(),
                     ),
                 ),
