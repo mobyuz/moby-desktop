@@ -980,10 +980,9 @@ async fn stop_while_the_window_is_open_cancels_even_if_ok_is_pressed_afterwards(
     let slot = Arc::clone(&agent_slot);
     let racing = Scripted {
         // Stop is pressed while the window is open; the person still presses OK afterwards.
-        before: Some(Box::new(move |_| {
+        after: Some(Box::new(move |_| {
             slot.lock().unwrap().as_ref().unwrap().cancel_turn();
         })),
-        delay: Duration::from_millis(50),
         ..Scripted::new(&[true])
     };
     let agent = Arc::new(Agent::with_timeouts(
@@ -1012,12 +1011,11 @@ async fn signing_out_in_the_real_order_while_the_window_is_open_launches_nothing
     let slot2 = Arc::clone(&slot);
     let window = Scripted {
         // Sign-out happens while the window is open, and the person still presses OK afterwards.
-        before: Some(Box::new(move |_| {
+        after: Some(Box::new(move |_| {
             let guard = slot2.lock().unwrap();
             let (agent, api) = guard.as_ref().unwrap();
             begin_sign_out(api, agent);
         })),
-        delay: Duration::from_millis(50),
         ..Scripted::new(&[true])
     };
     let agent = Arc::new(Agent::with_timeouts(
@@ -1054,7 +1052,9 @@ async fn a_change_in_the_registry_while_the_window_is_open_cancels_the_launch() 
         // The app is removed from the registry while the window is open; OK is pressed anyway.
         before: Some(Box::new(move |_| {
             let conn = rusqlite::Connection::open(d2.lock().unwrap().as_str()).unwrap();
-            conn.execute("DELETE FROM allowed_apps", []).unwrap();
+            // Still registered, but no longer what the person was shown.
+            conn.execute("UPDATE allowed_apps SET name = 'Something else'", [])
+                .unwrap();
         })),
         ..Scripted::new(&[true])
     };

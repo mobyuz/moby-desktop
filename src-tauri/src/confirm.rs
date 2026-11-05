@@ -63,6 +63,9 @@ pub(crate) mod testing {
         pub shown: Mutex<Vec<Prompt>>,
         pub delay: Duration,
         pub before: Option<Hook>,
+        /// Runs after the delay, just before the answer is returned: the window is already
+        /// closed, so only the checks after the answer can still stop the call.
+        pub after: Option<Hook>,
     }
 
     impl Scripted {
@@ -72,6 +75,7 @@ pub(crate) mod testing {
                 shown: Mutex::new(Vec::new()),
                 delay: Duration::ZERO,
                 before: None,
+                after: None,
             }
         }
 
@@ -93,6 +97,9 @@ pub(crate) mod testing {
                 }
                 if !self.delay.is_zero() {
                     tokio::time::sleep(self.delay).await;
+                }
+                if let Some(hook) = &self.after {
+                    hook(number);
                 }
                 self.answers.lock().unwrap().pop().unwrap_or(false)
             })
