@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { MobyFace } from "../face/MobyFace";
+import { MobyFace } from "@mobyuz/moby-ui";
 import { exceedsLimit, MAX_TEXT_BYTES } from "../history";
 import { Icon } from "../icons";
 import { useApp } from "../store";
