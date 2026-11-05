@@ -1808,6 +1808,31 @@ fn a_proof_that_arrives_inside_the_window_but_late_still_counts() {
 }
 
 #[test]
+fn a_forged_device_gets_nothing_while_the_proof_window_is_still_open() {
+    let forger = SimRobot::new(DEVICE)
+        .with_capabilities(&["usb_pcm"])
+        .forger();
+    let (mut rig, heard) = proof_rig(forger, Some(7));
+    // Past the first keepalive, which it answers with command_ok, and before the 3 s timeout.
+    rig.run(2_400);
+    assert_eq!(rig.snap().phase, Phase::Connecting);
+    talk(&mut rig, 300);
+    assert!(
+        rig.sim(|robot| robot.stats.frames_sent) > 0,
+        "the forger did send audio frames"
+    );
+    assert_ne!(rig.snap().phase, Phase::Ready);
+    assert_eq!(rig.snap().stats.audio_streams, 0);
+    assert!(
+        summary(&heard)
+            .iter()
+            .all(|e| !e.starts_with("utterance") && e != "started"),
+        "{:?}",
+        summary(&heard)
+    );
+}
+
+#[test]
 fn a_forged_device_with_the_real_id_that_answers_keepalives_and_sends_audio_reaches_nothing() {
     use crate::agent::Agent;
     use crate::confirm::testing::Scripted;

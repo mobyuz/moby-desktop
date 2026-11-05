@@ -528,10 +528,7 @@ impl Session {
         }
     }
 
-    /// The only place `Auth::Authenticated` is set. Today the robot is trusted once it accepted
-    /// our proof (or took the new key). The owner decided on 2026-11-05 that the robot must prove
-    /// itself to the desktop as well; when that exists, this function is where the check goes and
-    /// nothing else can reach `Authenticated`.
+    /// The only place `Auth::Authenticated` is set, called only after a valid `session_proof`.
     fn grant_authenticated(&mut self) {
         self.auth = Auth::Authenticated;
     }
