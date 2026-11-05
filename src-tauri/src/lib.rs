@@ -6,6 +6,7 @@ mod commands;
 mod grants;
 mod paths;
 mod registry;
+mod robot;
 mod scheduler;
 mod store;
 mod text;
@@ -34,6 +35,7 @@ pub fn run() {
                 eprintln!("moby: could not move the history file to the local folder: {error}");
             }
             app.manage(store::Store::open(&dir));
+            app.manage(robot::Robot::start(app.handle().clone()));
             scheduler::start(app.handle().clone());
             Ok(())
         })
@@ -64,6 +66,15 @@ pub fn run() {
             commands::delete_reminder,
             commands::list_activity,
             commands::clear_activity,
+            robot::robot_subscribe,
+            robot::robot_ports,
+            robot::robot_connect,
+            robot::robot_disconnect,
+            robot::robot_begin_pairing,
+            robot::robot_cancel_pairing,
+            robot::robot_devices,
+            robot::robot_unpair,
+            robot::robot_dev,
             store::get_settings,
             store::set_language,
             store::set_retention,

@@ -87,7 +87,7 @@ fn vault_entry(name: &str) -> Result<keyring::Entry, Failure> {
     keyring::Entry::new(VAULT_SERVICE, name).map_err(|_| Failure::vault())
 }
 
-fn vault_get(name: &str) -> Result<Option<String>, Failure> {
+pub(crate) fn vault_get(name: &str) -> Result<Option<String>, Failure> {
     match vault_entry(name)?.get_password() {
         Ok(value) => Ok(Some(value)),
         Err(keyring::Error::NoEntry) => Ok(None),
@@ -95,13 +95,13 @@ fn vault_get(name: &str) -> Result<Option<String>, Failure> {
     }
 }
 
-fn vault_set(name: &str, value: &str) -> Result<(), Failure> {
+pub(crate) fn vault_set(name: &str, value: &str) -> Result<(), Failure> {
     vault_entry(name)?
         .set_password(value)
         .map_err(|_| Failure::vault())
 }
 
-fn vault_clear(name: &str) -> Result<(), Failure> {
+pub(crate) fn vault_clear(name: &str) -> Result<(), Failure> {
     match vault_entry(name)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(_) => Err(Failure::vault()),

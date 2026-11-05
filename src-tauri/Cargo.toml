@@ -16,6 +16,8 @@ tauri-build = { version = "2.7.4", features = [] }
 
 [dependencies]
 futures-util = { version = "0.3.34", default-features = false }
+# Same release the uuid crate already uses. The pairing key comes from the operating system's random generator (BCryptGenRandom on Windows).
+getrandom = "=0.4.3"
 # In-process git status for git_status. Pinned exactly and with only the status features: see docs/adr/0004-git-status.md.
 gix = { version = "=0.90.0", default-features = false, features = ["status", "revision", "sha1"] }
 keyring = "4.2.0"
@@ -26,6 +28,8 @@ reqwest = { version = "0.13.5", default-features = false, features = ["native-tl
 rfd = { version = "0.17.2", default-features = false }
 # Pinned exactly: the bundled SQLite is part of the local-data trust base (see docs/adr/0003-local-store.md).
 rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled"] }
+# USB serial ports: listing with their USB IDs, and the link to the robot. Pinned exactly (MPL-2.0, file-level copyleft) and without libudev, which is Linux only. See docs/adr/0006-robot-link.md.
+serialport = { version = "=4.10.1", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tauri = { version = "2.12.5", features = [] }
