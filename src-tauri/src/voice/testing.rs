@@ -44,6 +44,7 @@ pub struct Stub {
     pub url: String,
     pub config: Arc<Mutex<Config>>,
     requests: Arc<Mutex<Vec<Request>>>,
+    connections: Arc<std::sync::atomic::AtomicU32>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -70,9 +71,12 @@ impl Stub {
         }));
         let requests = Arc::new(Mutex::new(Vec::<Request>::new()));
         let (cfg, seen) = (Arc::clone(&config), Arc::clone(&requests));
+        let connections = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counted = Arc::clone(&connections);
         std::thread::spawn(move || {
             for connection in listener.incoming() {
                 let Ok(stream) = connection else { continue };
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let (cfg, seen) = (Arc::clone(&cfg), Arc::clone(&seen));
                 std::thread::spawn(move || serve(stream, &cfg, &seen));
             }
@@ -81,11 +85,18 @@ impl Stub {
             url,
             config,
             requests,
+            connections,
         }
     }
 
     pub fn set(&self, change: impl FnOnce(&mut Config)) {
         change(&mut lock(&self.config));
+    }
+
+    /// Connections the stub accepted, even ones that never finished a request. A request that was
+    /// started and then dropped still counts here.
+    pub fn connections(&self) -> u32 {
+        self.connections.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn requests(&self) -> Vec<Request> {

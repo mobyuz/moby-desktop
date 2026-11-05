@@ -460,7 +460,9 @@ mod tests {
                     }
                     AudioEvent::Aborted { reason, .. } => format!("aborted {}", reason.code()),
                 };
-                seen.lock().unwrap().push(text);
+                seen.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(text);
             })
         };
         (Assembler::new(sink), seen)

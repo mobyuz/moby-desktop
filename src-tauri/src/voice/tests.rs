@@ -916,6 +916,12 @@ async fn a_turn_that_is_already_canceled_never_sends_its_request() {
         turn.cancel.cancel();
         let deps = world.deps();
         world.voice.run_turn(&deps, turn, marker_pcm(1000)).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            world.stub.connections(),
+            0,
+            "not even a connection was started"
+        );
         assert!(
             world.stub.requests().is_empty(),
             "select! must not race a canceled turn"
