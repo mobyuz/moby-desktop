@@ -985,3 +985,8 @@ pub async fn cancel_turn(agent: State<'_, Agent>) -> Result<(), Failure> {
 #[cfg(test)]
 #[path = "agent_tests.rs"]
 mod tests;
+
+/// Runs only on request (`cargo test -- --ignored`): the loop against a real moby-api.
+#[cfg(test)]
+#[path = "e2e_tests.rs"]
+mod e2e;
