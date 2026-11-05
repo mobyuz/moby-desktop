@@ -865,7 +865,7 @@ fn the_pairing_window_has_its_own_deadline_if_the_robot_never_reports_a_timeout(
 }
 
 #[test]
-fn pair_reset_makes_the_desktop_forget_its_copy() {
+fn pair_reset_keeps_the_key_and_asks_the_person() {
     let mut rig = paired_rig(7, Some(7));
     rig.connect();
     rig.run(1_500);
@@ -874,10 +874,47 @@ fn pair_reset_makes_the_desktop_forget_its_copy() {
     rig.sim(|robot| robot.long_press(now));
     rig.run(300);
     let snap = rig.snap();
-    assert_eq!(snap.phase, Phase::Unpaired);
-    assert!(!snap.device.unwrap().paired_here);
-    assert!(!rig.pairings.has_key(DEVICE) && !rig.pairings.has_record(DEVICE));
+    assert_eq!(snap.phase, Phase::PairingReset);
+    assert!(snap.message.unwrap().contains("Unpair"));
+    assert!(snap.device.unwrap().paired_here, "the key is still here");
+    assert!(rig.pairings.has_key(DEVICE) && rig.pairings.has_record(DEVICE));
     assert!(!rig.sim(|robot| robot.is_paired()));
+    // Only an explicit unpair removes it.
+    rig.sup.command(Command::Unpair(DEVICE.to_owned())).unwrap();
+    assert!(!rig.pairings.has_key(DEVICE) && !rig.pairings.has_record(DEVICE));
+    assert_eq!(rig.snap().phase, Phase::Unpaired);
+}
+
+#[test]
+fn a_forged_pair_reset_cannot_erase_a_pairing_or_start_audio() {
+    let mut rig = paired_rig(7, Some(7));
+    rig.connect();
+    rig.run(1_500);
+    rig.sim(|robot| {
+        robot.inject_payload(
+            &serde_json::to_vec(&event_json("e-66", "pair_reset", json!({}))).unwrap(),
+        );
+    });
+    rig.run(300);
+    assert_eq!(rig.snap().phase, Phase::PairingReset);
+    assert!(rig.pairings.has_key(DEVICE), "a message anyone can send did not delete the key");
+    assert!(rig.sim(|robot| robot.is_paired()));
+}
+
+#[test]
+fn pairing_again_after_a_reset_replaces_the_key() {
+    let mut rig = paired_rig(7, Some(7));
+    rig.connect();
+    rig.run(1_500);
+    let now = rig.now();
+    rig.sim(|robot| robot.long_press(now));
+    rig.run(300);
+    rig.sup.command(Command::BeginPairing).unwrap();
+    rig.run(300);
+    rig.press();
+    rig.run(500);
+    assert!(rig.pairings.has_key(DEVICE));
+    assert!(rig.sim(|robot| robot.is_paired()));
 }
 
 #[test]
@@ -1337,4 +1374,44 @@ fn the_whole_chain_runs_from_the_simulated_robot_through_stub_speech_services() 
         rig.run(200);
     }
     assert_eq!(rig.sim(|robot| robot.current_face()), Expression::Happy);
+}
+
+// ---- review fixes ----------------------------------------------------------------------
+
+#[test]
+fn a_hello_flood_costs_one_vault_read_and_hellos_alone_cannot_keep_a_link_alive() {
+    let pairings = Arc::new(MemoryPairings::with_key(DEVICE, key(7)));
+    let store: Arc<dyn PairingStore> = pairings.clone();
+    let mut session = Session::new(store, Box::new(SeqRandom(0)), 1_000);
+    for n in 0..500_u64 {
+        session.on_message(
+            1_000 + n / 50,
+            &robot_message(hello_json(&format!("e-{n}"), true, 1)),
+        );
+    }
+    assert_eq!(pairings.reads(), 1, "one Credential Manager read, not 500");
+    assert!(session.unexpected >= 490);
+    // Hellos at the rate of a real robot, and nothing else: the link still ends.
+    for (n, at) in (2_000..8_000).step_by(600).enumerate() {
+        session.on_message(at, &robot_message(hello_json(&format!("h-{n}"), true, 1)));
+    }
+    assert_eq!(session.tick(8_000), Some(DropReason::HeartbeatLost));
+}
+
+#[test]
+fn text_from_the_robot_loses_bidi_and_zero_width_characters() {
+    let pairings: Arc<dyn PairingStore> = Arc::new(MemoryPairings::default());
+    let mut session = Session::new(pairings, Box::new(SeqRandom(0)), 1_000);
+    session.on_message(1_000, &robot_message(hello_json("e-1", false, 1)));
+    session.on_message(
+        1_100,
+        &robot_message(event_json(
+            "e-2",
+            "error",
+            json!({"code":"E_HW","detail":"fine\u{202E}gnp.exe\u{200B}\u{2066}x"}),
+        )),
+    );
+    let error = session.snapshot().error.unwrap();
+    assert_eq!(error.detail, "finegnp.exex");
+    assert_eq!(super::transport::clean_label("Mo\u{202E}by\u{200B} board"), "Moby board");
 }

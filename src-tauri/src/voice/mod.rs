@@ -30,7 +30,7 @@ pub(crate) mod testing;
 mod tests;
 pub(crate) mod wav;
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -42,22 +42,18 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::agent::{Agent, Cancel, Sink, TurnInput, UiError, UiEvent};
 use crate::api::{Api, Failure};
+use crate::confirm::{Confirmer, Prompt};
 use crate::robot::Robot;
 use crate::robot::audio::{AbortReason, AudioEvent, Pcm};
 use crate::store::{Store, now_ms};
 
 use play::{DeviceSpeaker, Speaker};
 
-/// Whether the PC microphone is part of this build. Release builds say no, and the check below
-/// makes that a compile-time fact, the same way the simulator is kept out (ADR 0006).
+/// Whether the PC microphone is part of this build. That a release build says no is proved by
+/// `scripts/check-release-excludes-dev.ps1`, which searches the built binary for the marker
+/// string in `mic.rs`, the same way the simulator is checked (ADR 0006).
 #[allow(dead_code)]
 pub const PC_MIC_COMPILED: bool = cfg!(any(test, debug_assertions));
-
-#[cfg(not(any(test, debug_assertions)))]
-const _: () = assert!(
-    !PC_MIC_COMPILED,
-    "the PC microphone must not be in a release build"
-);
 
 /// Below this the speech service was not sure what it heard, and the robot asks again.
 /// A proposal from the plan, not a measured value.
@@ -234,6 +230,9 @@ pub struct Voice {
     sinks: Mutex<Vec<Box<dyn ViewSink>>>,
     slot: Slot,
     held: Mutex<Option<Held>>,
+    /// Set the moment consent is withdrawn and cleared when it is given again. It outranks the
+    /// stored consent, so voice stays off even if the settings file cannot be written.
+    revoked: AtomicBool,
     next: AtomicU64,
     limits: Limits,
     log: Box<dyn Fn(&'static str) + Send + Sync>,
@@ -253,6 +252,7 @@ impl Voice {
             sinks: Mutex::new(Vec::new()),
             slot: Arc::new(Mutex::new(None)),
             held: Mutex::new(None),
+            revoked: AtomicBool::new(false),
             next: AtomicU64::new(1),
             limits,
             // Only fixed strings can be logged: a transcript or audio cannot be passed here.
@@ -334,7 +334,12 @@ impl Voice {
     /// before audio leaves the computer, and again before the answer is spoken.
     pub fn require_consent(&self, api: &Api, store: &Store) -> Result<(), Failure> {
         let user = api.account_id()?;
-        match store.with(|db| db.voice_consent())? {
+        let stored = if self.revoked.load(Ordering::SeqCst) {
+            None
+        } else {
+            store.with(|db| db.voice_consent())?
+        };
+        match stored {
             Some((account, _)) if account == user => Ok(()),
             _ => Err(Failure::new(
                 "voice_consent_required",
@@ -345,7 +350,11 @@ impl Voice {
 
     pub fn consent_status(&self, api: &Api, store: &Store) -> Result<ConsentStatus, Failure> {
         let user = api.account_id()?;
-        let stored = store.with(|db| db.voice_consent())?;
+        let stored = if self.revoked.load(Ordering::SeqCst) {
+            None
+        } else {
+            store.with(|db| db.voice_consent())?
+        };
         Ok(match stored {
             Some((account, version)) if account == user => ConsentStatus {
                 accepted: true,
@@ -358,12 +367,35 @@ impl Voice {
         })
     }
 
-    /// Records the consent on the server and, only if that worked, here.
-    pub async fn accept_consent(&self, api: &Api, store: &Store) -> Result<ConsentStatus, Failure> {
+    /// Turning cloud voice on is confirmed in a native window that Rust opens, so a compromised
+    /// page cannot do it by calling this command. The window says plainly that audio leaves the
+    /// computer, and shows the consent version (and the server's consent text, if it sends one).
+    /// The consent is recorded on the server and, only if that worked, here. Cancel records nothing.
+    pub async fn accept_consent(
+        &self,
+        api: &Api,
+        store: &Store,
+        confirmer: &dyn Confirmer,
+    ) -> Result<ConsentStatus, Failure> {
         let user = api.account_id()?;
-        let version = client::current_consent_version(api).await?;
-        client::set_consent(api, &version, true).await?;
-        store.with(|db| db.set_voice_consent(Some((&user, &version)), now_ms()))?;
+        let offer = client::current_consent_offer(api).await?;
+        let mut lines = vec![
+            "Turn on cloud voice?".to_owned(),
+            "What you say will leave this computer as audio and be sent to Moby's server, which turns it into text. The text of Moby's answer is sent too, to be turned into speech. The server does not keep either."
+                .to_owned(),
+            "Moby only listens while you hold the talk button on the robot.".to_owned(),
+            format!("Consent version: {}", offer.version),
+        ];
+        if let Some(text) = &offer.text {
+            lines.push(format!("From the server: {text}"));
+        }
+        let prompt = Prompt::new("Send your voice to Moby's server?", &lines, "turn voice on");
+        if !confirmer.confirm(prompt).await {
+            return Err(Failure::new("canceled", "Voice stays off."));
+        }
+        client::set_consent(api, &offer.version, true).await?;
+        store.with(|db| db.set_voice_consent(Some((&user, &offer.version)), now_ms()))?;
+        self.revoked.store(false, Ordering::SeqCst);
         self.log("consent accepted");
         self.consent_status(api, store)
     }
@@ -376,13 +408,17 @@ impl Voice {
         store: &Store,
         robot: &dyn RobotControl,
     ) -> Result<ConsentStatus, Failure> {
+        // First of all: nothing more leaves, whatever happens to the settings file below.
+        self.revoked.store(true, Ordering::SeqCst);
+        self.stop_everything(robot);
         let user = api.account_id()?;
         let version = store
-            .with(|db| db.voice_consent())?
+            .with(|db| db.voice_consent())
+            .ok()
+            .flatten()
             .filter(|(account, _)| *account == user)
             .map(|(_, version)| version);
         store.with(|db| db.set_voice_consent(None, now_ms()))?;
-        self.stop_everything(robot);
         self.log("consent revoked");
         // Best effort: it is already off on this computer, so a failure here is only reported.
         let told = match version {
@@ -564,12 +600,19 @@ impl Voice {
         self.set_stage(id, Stage::Transcribing);
         deps.robot.face(Expression::Thinking, 0);
         self.log("speech to text");
+        if cancel.is_canceled() {
+            drop(wave);
+            return self.stopped(deps, &turn);
+        }
+        // `biased`: select! otherwise picks at random when both are ready, and a canceled turn
+        // must not start its request.
         let heard = tokio::select! {
-            result = client::transcribe(deps.api, wave.as_bytes().to_vec(), self.limits.stt_timeout) => result,
+            biased;
             () = cancel.cancelled() => {
                 drop(wave);
                 return self.stopped(deps, &turn);
             }
+            result = client::transcribe(deps.api, wave.as_bytes().to_vec(), self.limits.stt_timeout) => result,
         };
         drop(wave);
         let transcript = match heard {
@@ -626,9 +669,10 @@ impl Voice {
             });
         }
         let handoff = tokio::select! {
+            biased;
+            () = cancel.cancelled() => None,
             result = rx => result.ok(),
             () = tokio::time::sleep(self.limits.handoff_timeout) => None,
-            () = cancel.cancelled() => None,
         };
         self.drop_held();
         let Some(Continue { input, sink, done }) = handoff else {
@@ -652,6 +696,10 @@ impl Voice {
             answer: Mutex::new(None),
             error: Mutex::new(None),
         });
+        if cancel.is_canceled() {
+            let _ = done.send(Err(Failure::new("canceled", "Stopped.")));
+            return self.stopped(deps, &turn);
+        }
         let mut run = std::pin::pin!(deps.agent.run_turn(
             deps.api,
             deps.store,
@@ -661,12 +709,13 @@ impl Voice {
         let mut asked_agent_to_stop = false;
         let outcome = loop {
             tokio::select! {
-                result = &mut run => break result,
+                biased;
                 () = cancel.cancelled(), if !asked_agent_to_stop => {
                     // The agent ends its own turn cleanly: pending approvals close, tools stop.
                     asked_agent_to_stop = true;
                     deps.agent.cancel_turn();
                 }
+                result = &mut run => break result,
             }
         };
         let _ = done.send(outcome.clone());
@@ -707,9 +756,13 @@ impl Voice {
         }
         self.set_stage(id, Stage::Synthesizing);
         self.log("text to speech");
+        if cancel.is_canceled() {
+            return self.stopped(deps, &turn);
+        }
         let spoken = tokio::select! {
-            result = client::synthesize(deps.api, &words, transcript.language, transcript.script, self.limits.tts_timeout) => result,
+            biased;
             () = cancel.cancelled() => return self.stopped(deps, &turn),
+            result = client::synthesize(deps.api, &words, transcript.language, transcript.script, self.limits.tts_timeout) => result,
         };
         let wave = match spoken {
             Ok(wave) => Pcm::new(wave),
@@ -739,6 +792,9 @@ impl Voice {
         // 6. Playback on this computer's speakers. Stopping it is dropping it.
         self.set_stage(id, Stage::Speaking);
         deps.robot.face(Expression::Speaking, 0);
+        if cancel.is_canceled() {
+            return self.stopped(deps, &turn);
+        }
         let playing = match deps.speaker.play(samples) {
             Ok(playing) => playing,
             Err(_) => {
@@ -757,11 +813,12 @@ impl Voice {
                 break;
             }
             tokio::select! {
-                () = tokio::time::sleep(Duration::from_millis(20)) => {}
+                biased;
                 () = cancel.cancelled() => {
                     playing.stop();
                     return self.stopped(deps, &turn);
                 }
+                () = tokio::time::sleep(Duration::from_millis(20)) => {}
             }
         }
         drop(playing);
@@ -811,6 +868,19 @@ impl Voice {
     /// chain as the robot's, and `mic_on` is true for exactly as long as it is capturing.
     #[cfg(any(test, debug_assertions))]
     pub fn dev_mic(&self, on: bool, api: &Api, store: &Store) -> Result<(), Failure> {
+        self.dev_mic_with(on, api, store, mic::MicCapture::start)
+    }
+
+    /// open is what actually touches the sound device. A test passes one that only records that
+    /// it was called, so "the microphone never opens without consent" can be checked.
+    #[cfg(any(test, debug_assertions))]
+    pub(crate) fn dev_mic_with(
+        &self,
+        on: bool,
+        api: &Api,
+        store: &Store,
+        open: impl FnOnce() -> Result<mic::MicCapture, String>,
+    ) -> Result<(), Failure> {
         if on {
             std::hint::black_box(mic::MIC_MARKER);
             self.require_consent(api, store)?;
@@ -818,7 +888,7 @@ impl Voice {
             if mic.is_some() {
                 return Ok(());
             }
-            *mic = Some(mic::MicCapture::start().map_err(|message| {
+            *mic = Some(open().map_err(|message| {
                 Failure::new(
                     "no_microphone",
                     &format!("The microphone could not be opened: {message}"),
@@ -892,8 +962,11 @@ pub async fn voice_accept_consent(
     voice: State<'_, Voice>,
     api: State<'_, Api>,
     store: State<'_, Store>,
+    agent: State<'_, Agent>,
 ) -> Result<ConsentStatus, Failure> {
-    voice.accept_consent(&api, &store).await
+    voice
+        .accept_consent(&api, &store, agent.confirmer().as_ref())
+        .await
 }
 
 #[tauri::command]

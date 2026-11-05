@@ -57,12 +57,7 @@ jobs:
       - name: Release binary has no simulator and no PC microphone
         working-directory: moby-desktop
         shell: pwsh
-        run: |
-          $bytes = [IO.File]::ReadAllBytes("src-tauri/target/release/moby-desktop.exe")
-          $text = [Text.Encoding]::Latin1.GetString($bytes)
-          foreach ($marker in "moby-simulator-compiled-7f3a91c2", "moby-pc-microphone-compiled-3c9e51d7") {
-            if ($text.Contains($marker)) { throw "release binary contains $marker" }
-          }
+        run: ./scripts/check-release-excludes-dev.ps1 src-tauri/target/release/moby-desktop.exe
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: moby-windows-installer

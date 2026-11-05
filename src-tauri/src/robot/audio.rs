@@ -30,6 +30,10 @@ pub const MAX_UTTERANCE_BYTES: usize = MAX_UTTERANCE_MS as usize * BYTES_PER_MS;
 pub const MIN_UTTERANCE_MS: u32 = 200;
 /// A stream with no frame for this long is cut off.
 pub const STALL_MS: u64 = 1_500;
+/// One stream may not last longer than this on the wall clock, however slowly its frames trickle
+/// in. The byte limit alone would let a frame a second keep a stream (and the turn) open for
+/// minutes without ever stalling.
+pub const STREAM_WALL_MS: u64 = 30_000;
 /// The frame length the firmware uses. Other lengths that fit a frame are accepted too.
 const MAX_FRAME_BYTES: usize = 1024;
 
@@ -188,6 +192,7 @@ struct Open {
     next_sequence: u32,
     frames: u32,
     buf: Vec<u8>,
+    started_at: u64,
     last_activity: u64,
 }
 
@@ -295,6 +300,7 @@ impl Assembler {
             next_sequence: 0,
             frames: 0,
             buf: Vec::with_capacity(frame_bytes * 64),
+            started_at: now,
             last_activity: now,
         });
         self.emit(AudioEvent::Started { stream_id });
@@ -400,7 +406,9 @@ impl Assembler {
         let Some(open) = &self.open else {
             return;
         };
-        if now.saturating_sub(open.last_activity) > STALL_MS {
+        if now.saturating_sub(open.started_at) > STREAM_WALL_MS {
+            self.abort(AbortReason::TooLong, true);
+        } else if now.saturating_sub(open.last_activity) > STALL_MS {
             self.abort(AbortReason::Stalled, true);
         }
     }
@@ -462,6 +470,22 @@ mod tests {
         for sequence in 0..frames {
             assembler.on_frame(10, stream, sequence, &[7; 640]);
         }
+    }
+
+    #[test]
+    fn a_stream_that_trickles_in_is_cut_at_the_wall_clock_limit() {
+        let (mut a, seen) = rig();
+        a.on_start(0, &start(3), true);
+        // One frame a second never stalls, and a few frames never reach the byte limit.
+        let mut at = 0;
+        while a.is_open() && at < 40_000 {
+            at += 1_000;
+            a.on_frame(at, 3, u32::try_from(at / 1_000 - 1).unwrap(), &[1; 640]);
+            a.tick(at);
+        }
+        assert_eq!(seen.lock().unwrap().last().unwrap(), "aborted audio_too_long");
+        assert!((30_000..=32_000).contains(&at), "{at}");
+        assert_eq!(a.take_cancels(), [3]);
     }
 
     #[test]

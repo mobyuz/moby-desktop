@@ -36,13 +36,8 @@ mod view;
 
 pub use service::Robot;
 
-/// Whether the simulator is part of this build. Release builds say no, and the check below makes
-/// that a compile-time fact rather than a convention.
+/// Whether the simulator is part of this build. That a release build says no is proved by
+/// `scripts/check-release-excludes-dev.ps1`, which searches the built binary for the simulator's
+/// marker string (a compile-time assert on this constant would only repeat the `cfg`).
 #[allow(dead_code)]
 pub const SIMULATOR_COMPILED: bool = cfg!(any(test, debug_assertions));
-
-#[cfg(not(any(test, debug_assertions)))]
-const _: () = assert!(
-    !SIMULATOR_COMPILED,
-    "the simulator must not be in a release build"
-);

@@ -11,7 +11,8 @@ use tauri::ipc::Channel;
 use super::service::Robot;
 use super::session::UserError;
 use super::supervisor::{Command, Target};
-use super::transport::{PortInfo, plausible_port_name};
+use super::transport::{PortInfo, PortKind, plausible_port_name};
+use crate::confirm::{Confirmer, Prompt};
 use super::view::Snapshot;
 use crate::api::Failure;
 
@@ -46,13 +47,98 @@ pub async fn robot_ports(robot: State<'_, Robot>) -> Result<Vec<PortInfo>, Failu
 
 /// Connects to the one port that looks like a Moby, or to the port the person chose.
 #[tauri::command]
-pub async fn robot_connect(robot: State<'_, Robot>, port: Option<String>) -> Result<(), Failure> {
+pub async fn robot_connect(
+    robot: State<'_, Robot>,
+    agent: State<'_, crate::agent::Agent>,
+    port: Option<String>,
+) -> Result<(), Failure> {
     let target = match port {
         None => Target::Auto,
-        Some(name) if plausible_port_name(&name) => Target::Port(name),
+        Some(name) if plausible_port_name(&name) => {
+            let ports = robot.ports().await?;
+            authorize_port(&ports, &name, agent.confirmer().as_ref()).await?;
+            Target::Port(name)
+        }
         Some(_) => return Err(Failure::new("invalid_input", "That isn't a port name.")),
     };
     Ok(robot.command(Command::Connect(target)).await?)
+}
+
+/// A port that does not look like a Moby is opened only after the person confirmed it in a native
+/// window that shows its name and USB IDs. Opening one means writing to it, and some boards react
+/// to a stray byte or a line change. Nothing is written before this returns.
+pub(crate) async fn authorize_port(
+    ports: &[PortInfo],
+    name: &str,
+    confirmer: &dyn Confirmer,
+) -> Result<(), Failure> {
+    let Some(port) = ports.iter().find(|port| port.name == name) else {
+        return Err(Failure::new(
+            "not_found",
+            "That port is not connected any more.",
+        ));
+    };
+    if port.kind == PortKind::Moby || port.simulated {
+        return Ok(());
+    }
+    let ids = match (port.vid, port.pid) {
+        (Some(vid), Some(pid)) => format!("USB ID {vid:04X}:{pid:04X}"),
+        _ => "USB ID unknown".to_owned(),
+    };
+    let prompt = Prompt::new(
+        "Open a device that does not look like Moby?",
+        &[
+            format!("Port: {}", port.name),
+            ids,
+            format!("The device calls itself: {}", port.label),
+            "Moby will send it data to see whether it is a Moby. Only continue if you plugged this device in and want to try it.".to_owned(),
+        ],
+        "open this port",
+    );
+    if confirmer.confirm(prompt).await {
+        Ok(())
+    } else {
+        Err(Failure::new("canceled", "The port was not opened."))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::confirm::testing::Scripted;
+
+    fn port(name: &str, kind: PortKind) -> PortInfo {
+        PortInfo {
+            name: name.to_owned(),
+            kind,
+            label: "Some\u{202E}Board".to_owned(),
+            simulated: false,
+            vid: Some(0x10C4),
+            pid: Some(0xEA60),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_port_that_is_not_a_moby_needs_a_native_yes_that_shows_its_ids() {
+        let ports = [port("COM3", PortKind::OtherUsb), port("COM4", PortKind::Moby)];
+        let no = Scripted::new(&[false]);
+        let error = authorize_port(&ports, "COM3", &no).await.unwrap_err();
+        assert_eq!(error.code_str(), "canceled");
+        let shown = no.shown();
+        assert_eq!(shown.len(), 1);
+        assert!(shown[0].body.contains("COM3") && shown[0].body.contains("10C4:EA60"));
+        assert!(!shown[0].body.contains('\u{202E}'));
+        let yes = Scripted::new(&[true]);
+        authorize_port(&ports, "COM3", &yes).await.unwrap();
+        // A port that looks like a Moby needs no window, and an unknown one is refused outright.
+        let none = Scripted::new(&[]);
+        authorize_port(&ports, "COM4", &none).await.unwrap();
+        assert!(none.shown().is_empty());
+        assert_eq!(
+            authorize_port(&ports, "COM9", &none).await.unwrap_err().code_str(),
+            "not_found"
+        );
+    }
 }
 
 #[tauri::command]

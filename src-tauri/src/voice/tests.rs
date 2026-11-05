@@ -246,11 +246,16 @@ async fn accepting_records_the_version_on_the_server_and_here_and_revoking_is_im
             .unwrap()
             .accepted
     );
+    let yes = Scripted::new(&[true]);
     let status = world
         .voice
-        .accept_consent(&world.api, &world.store)
+        .accept_consent(&world.api, &world.store, &yes)
         .await
         .unwrap();
+    let shown = yes.shown();
+    assert_eq!(shown.len(), 1, "turning voice on is confirmed in a native window");
+    assert!(shown[0].body.contains("leave this computer as audio"));
+    assert!(shown[0].body.contains("Consent version: dev-1"));
     assert_eq!(status.version.as_deref(), Some("dev-1"));
     let posts = world.stub.to("/v1/consents");
     let sent: serde_json::Value = serde_json::from_slice(&posts[1].body).unwrap();
@@ -288,10 +293,11 @@ async fn a_refused_acceptance_stores_nothing() {
             r#"{"code":"invalid_input","message":"x","request_id":"r"}"#.into(),
         );
     });
+    let yes = Scripted::new(&[true]);
     assert!(
         world
             .voice
-            .accept_consent(&world.api, &world.store)
+            .accept_consent(&world.api, &world.store, &yes)
             .await
             .is_err()
     );
@@ -674,8 +680,12 @@ async fn a_spoken_yes_never_launches_a_program_the_native_window_decides() {
     );
 }
 
+/// A tripwire, not a proof: it only catches the obvious ways of adding approval code to this
+/// file. What proves that voice cannot approve is behaviour, in the two tests above (a spoken yes
+/// leaves a reminder unsaved and a program unlaunched). This cannot see code elsewhere that calls
+/// into the agent, and cannot prove the page does not approve on voice's behalf.
 #[test]
-fn the_voice_module_has_no_way_to_answer_an_approval() {
+fn tripwire_the_voice_module_does_not_mention_approval_calls() {
     let source = include_str!("mod.rs");
     let live = source.split("#[cfg(test)]").next().unwrap();
     for forbidden in [
@@ -766,12 +776,110 @@ async fn audio_and_transcripts_reach_no_log_no_audit_entry_and_no_file() {
 }
 
 #[tokio::test]
-async fn the_pc_microphone_never_opens_without_consent_and_is_a_development_feature() {
+async fn the_pc_microphone_is_not_opened_without_consent() {
     let world = World::build(false, Limits::default(), Duration::from_secs(30), &[]);
-    assert!(world.voice.dev_mic(true, &world.api, &world.store).is_err());
+    let opened = std::sync::atomic::AtomicU32::new(0);
+    let open = || {
+        opened.fetch_add(1, Ordering::SeqCst);
+        Err("a fake that never touches a device".to_owned())
+    };
+    let refused = world.voice.dev_mic_with(true, &world.api, &world.store, open);
+    assert_eq!(refused.unwrap_err().code_str(), "voice_consent_required");
+    assert_eq!(opened.load(Ordering::SeqCst), 0, "the device was never touched");
     assert!(!world.voice.view().mic_on);
-    const { assert!(PC_MIC_COMPILED) };
-    assert!(world.voice.view().dev_mic);
+    // With consent it is asked once, and a failure to open leaves "mic on" off.
+    world
+        .store
+        .with(|db| db.set_voice_consent(Some((USER, "dev-1")), now_ms()))
+        .unwrap();
+    let open = || {
+        opened.fetch_add(1, Ordering::SeqCst);
+        Err("a fake that never touches a device".to_owned())
+    };
+    let failed = world.voice.dev_mic_with(true, &world.api, &world.store, open);
+    assert_eq!(failed.unwrap_err().code_str(), "no_microphone");
+    assert_eq!(opened.load(Ordering::SeqCst), 1);
+    assert!(!world.voice.view().mic_on);
+    assert!(world.voice.view().dev_mic, "development builds only: tests are one");
+}
+
+#[tokio::test]
+async fn turning_voice_on_needs_the_native_yes_and_cancel_records_nothing() {
+    let world = World::build(false, Limits::default(), Duration::from_secs(30), &[]);
+    let no = Scripted::new(&[false]);
+    let error = world
+        .voice
+        .accept_consent(&world.api, &world.store, &no)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code_str(), "canceled");
+    assert_eq!(no.shown().len(), 1);
+    assert!(!world.voice.consent_status(&world.api, &world.store).unwrap().accepted);
+    assert!(
+        world.stub.to("/v1/consents").iter().all(|r| r.body.is_empty()),
+        "the server was only asked for the version, never told yes"
+    );
+    world.talk().await;
+    assert!(world.stub.to("/v1/voice/stt").is_empty());
+}
+
+#[tokio::test]
+async fn the_confirmation_shows_the_servers_consent_text_when_there_is_one() {
+    let world = World::build(false, Limits::default(), Duration::from_secs(30), &[]);
+    world.stub.set(|c| {
+        c.consents_get = Some(Reply::Json(
+            200,
+            r#"{"current_versions":{"terms":"t","privacy_policy":"p","cloud_voice":"v7"},"texts":{"cloud_voice":"Audio goes to our speech partner."},"records":[]}"#.into(),
+        ));
+    });
+    let no = Scripted::new(&[false]);
+    let _ = world.voice.accept_consent(&world.api, &world.store, &no).await;
+    let body = no.shown()[0].body.clone();
+    assert!(body.contains("Consent version: v7") && body.contains("Audio goes to our speech partner."));
+}
+
+#[tokio::test]
+async fn revoking_stops_the_turn_first_and_voice_stays_off_even_if_the_settings_cannot_be_written() {
+    let world = World::new();
+    world.stub.set(|c| c.stt = Reply::Hang);
+    world
+        .talk_and(false, async {
+            world.stub.wait_for("/v1/voice/stt", 1).await;
+            // Writes to the settings file now fail; reads still work.
+            world
+                .store
+                .with(|db| {
+                    db.conn.pragma_update(None, "query_only", true).unwrap();
+                    Ok(())
+                })
+                .unwrap();
+            let result = world
+                .voice
+                .revoke_consent(&world.api, &world.store, &world.robot)
+                .await;
+            assert!(result.is_err(), "the write failed and the caller is told");
+        })
+        .await;
+    world.stub.wait_dropped("/v1/voice/stt", 0).await;
+    assert_eq!(world.robot.cancels(), 1);
+    assert!(
+        world.voice.require_consent(&world.api, &world.store).is_err(),
+        "voice stays off for this run although the stored consent could not be cleared"
+    );
+    world.talk().await;
+    assert_eq!(world.stub.to("/v1/voice/stt").len(), 1, "nothing more was sent");
+}
+
+#[tokio::test]
+async fn a_turn_that_is_already_canceled_never_sends_its_request() {
+    for _ in 0..40 {
+        let world = World::new();
+        let turn = world.voice.start_turn();
+        turn.cancel.cancel();
+        let deps = world.deps();
+        world.voice.run_turn(&deps, turn, marker_pcm(1000)).await;
+        assert!(world.stub.requests().is_empty(), "select! must not race a canceled turn");
+    }
 }
 
 #[test]

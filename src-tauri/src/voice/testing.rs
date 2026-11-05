@@ -29,6 +29,7 @@ pub struct Config {
     pub tts: Reply,
     pub agent: Vec<Reply>,
     pub consents_post: Reply,
+    pub consents_get: Option<Reply>,
 }
 
 #[derive(Clone, Debug)]
@@ -65,6 +66,7 @@ impl Stub {
             tts: Reply::Wav(tone_wav()),
             agent: vec![Reply::Sse(vec![ANSWER.to_owned()])],
             consents_post: Reply::Json(204, String::new()),
+            consents_get: None,
         }));
         let requests = Arc::new(Mutex::new(Vec::<Request>::new()));
         let (cfg, seen) = (Arc::clone(&config), Arc::clone(&requests));
@@ -171,6 +173,9 @@ fn serve(mut stream: std::net::TcpStream, cfg: &Mutex<Config>, seen: &Mutex<Vec<
             ("POST", "/v1/voice/stt") => cfg.stt.clone(),
             ("POST", "/v1/voice/tts") => cfg.tts.clone(),
             ("POST", "/v1/consents") => cfg.consents_post.clone(),
+            ("GET", "/v1/consents") if cfg.consents_get.is_some() => {
+                cfg.consents_get.clone().unwrap_or(Reply::Hang)
+            }
             ("GET", "/v1/consents") => Reply::Json(
                 200,
                 r#"{"current_versions":{"terms":"dev-1","privacy_policy":"dev-1","cloud_voice":"dev-1"},"records":[]}"#

@@ -48,6 +48,9 @@ pub struct PortInfo {
     /// Text for people, cleaned: the device chose it.
     pub label: String,
     pub simulated: bool,
+    /// The USB IDs the device reported, for the confirmation window. None for the simulator.
+    pub vid: Option<u16>,
+    pub pid: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,11 +70,7 @@ pub trait Connector: Send {
 
 /// Keeps printable characters and cuts the text short. A device name is untrusted.
 pub fn clean_label(text: &str) -> String {
-    let cleaned: String = text
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(MAX_LABEL_CHARS)
-        .collect();
+    let cleaned = crate::text::short_line(text, MAX_LABEL_CHARS);
     let cleaned = cleaned.trim();
     if cleaned.is_empty() {
         "USB serial device".to_owned()
@@ -115,6 +114,8 @@ impl Connector for SerialConnector {
                         label: clean_label(usb.product.as_deref().unwrap_or("")),
                         name: port.port_name,
                         simulated: false,
+                        vid: Some(usb.vid),
+                        pid: Some(usb.pid),
                     })
                 }
                 _ => None,

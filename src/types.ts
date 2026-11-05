@@ -153,6 +153,7 @@ export type RobotPhase =
   | "foreign_paired"
   | "key_rejected"
   | "vault_unavailable"
+  | "pairing_reset"
   | "ready";
 
 export type PairStep = "starting" | "press_button" | "saving";
@@ -203,6 +204,8 @@ export interface RobotPort {
   kind: "moby" | "other_usb";
   label: string;
   simulated: boolean;
+  vid?: number | null;
+  pid?: number | null;
 }
 
 export interface PairedRobot {

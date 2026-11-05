@@ -21,6 +21,21 @@ The model's output is an untrusted request, never permission. Everything below a
 | `open_project` | An option injected as the folder argument; launching the wrong program | Exactly one argument, the canonical folder path which always begins with a drive letter and `:\`, so it can never start with `-`, and it is verified to be so; same launch rules and native confirmation as `open_app`. The name list of shells and interpreters is defence in depth, **not a boundary**: a renamed copy passes | `tools/launch.rs::open_project_passes_exactly_the_canonical_folder` (uses a folder named `-dash project`) |
 | `create_reminder` | A reminder whose text misleads, or hides characters | On-screen confirmation of the cleaned text in quotes; control, bidirectional and invisible characters removed; due time must be in the future and within a year; at most 50 pending | agent reminder tests |
 
+## Robot link and voice (D3, D4)
+
+| Threat | Defence | Test |
+| --- | --- | --- |
+| A device on the port sends `pair_reset` to erase the pairing | The key is kept; the session is untrusted until the person unpairs or pairs again | `a_forged_pair_reset_cannot_erase_a_pairing_or_start_audio` |
+| A non-Moby USB device is opened and written to | Native confirmation with name and USB IDs before anything is written | `a_port_that_is_not_a_moby_needs_a_native_yes_that_shows_its_ids` |
+| A hello flood burns Credential Manager reads or keeps a dead link alive | 500 ms minimum gap; a hello is not a heartbeat | `a_hello_flood_costs_one_vault_read_and_hellos_alone_cannot_keep_a_link_alive` |
+| Robot text hides characters (bidi, zero-width) | `text.rs` on the robot's error text and device labels | `text_from_the_robot_loses_bidi_and_zero_width_characters` |
+| A compromised page turns cloud voice on | Native confirmation of the consent in Rust | `turning_voice_on_needs_the_native_yes_and_cancel_records_nothing` |
+| A stream trickles in forever | 30 s wall clock on one stream | `a_stream_that_trickles_in_is_cut_at_the_wall_clock_limit` |
+| A canceled or revoked turn still sends a request | Explicit cancel check and biased `select!`; revoke stops the turn first | `a_turn_that_is_already_canceled_never_sends_its_request`, `revoking_stops_the_turn_first_...` |
+| A spoken "yes" approves a tool | Voice has no path to the approval code; launches need the native window | `a_spoken_yes_never_approves_a_reminder`, `a_spoken_yes_never_launches_a_program_the_native_window_decides` |
+
+Known gap: the robot is not yet proven to the desktop (owner decision of 2026-11-05: two-way proof, to come).
+
 ## Cross-cutting
 
 - **Paths** (`paths.rs`): only `X:\...`; no UNC, `\\?\`, `\\.\`, `..`, alternate data streams, device names (with extensions and trailing spaces), trailing dot or space, control or bidirectional characters, drive roots; canonical form must equal the stored form, case-insensitively (a junction, symlink, rename or short-name swap changes it). `std::fs::canonicalize` returns `\\?\C:\...`; the prefix is removed from our own output only, and a `\\?\` path in input is refused.

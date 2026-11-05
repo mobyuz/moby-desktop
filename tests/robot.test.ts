@@ -28,9 +28,9 @@ describe("robot status", () => {
   });
 
   it("explains each phase in words and never leaves a state blank", () => {
-    const phases: RobotPhase[] = ["disconnected", "connecting", "reconnecting", "incompatible", "unpaired", "pairing", "foreign_paired", "key_rejected", "vault_unavailable", "ready"];
+    const phases: RobotPhase[] = ["disconnected", "connecting", "reconnecting", "incompatible", "unpaired", "pairing", "foreign_paired", "key_rejected", "vault_unavailable", "pairing_reset", "ready"];
     for (const phase of phases) {
-      const message = phase === "incompatible" || phase === "foreign_paired" || phase === "key_rejected" || phase === "vault_unavailable" ? "Because." : null;
+      const message = phase === "incompatible" || phase === "foreign_paired" || phase === "key_rejected" || phase === "vault_unavailable" || phase === "pairing_reset" ? "Because." : null;
       expect(robotDetail(robot({ phase, message })).length).toBeGreaterThan(0);
     }
     expect(robotDetail(robot({ phase: "ready", muted: true }))).toContain("mute switch is on");

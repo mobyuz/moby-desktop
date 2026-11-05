@@ -218,8 +218,23 @@ pub async fn synthesize(
     Ok(wave)
 }
 
-/// The `cloud_voice` version the server wants accepted now.
+/// The `cloud_voice` version the server wants accepted now, and the consent text if the server
+/// sends one (`GET /v1/consents` returns versions only today, so the text is usually absent).
+pub struct ConsentOffer {
+    pub version: String,
+    pub text: Option<String>,
+}
+
+pub async fn current_consent_offer(api: &Api) -> Result<ConsentOffer, Failure> {
+    let (version, text) = fetch_consent(api).await?;
+    Ok(ConsentOffer { version, text })
+}
+
 pub async fn current_consent_version(api: &Api) -> Result<String, Failure> {
+    Ok(fetch_consent(api).await?.0)
+}
+
+async fn fetch_consent(api: &Api) -> Result<(String, Option<String>), Failure> {
     let response = api
         .send_with(Method::GET, "/v1/consents", None, |r| r)
         .await?;
@@ -230,11 +245,16 @@ pub async fn current_consent_version(api: &Api) -> Result<String, Failure> {
         .json()
         .await
         .map_err(|_| Failure::new("unexpected", "Something went wrong. Try again."))?;
-    body["current_versions"]["cloud_voice"]
+    let version = body["current_versions"]["cloud_voice"]
         .as_str()
         .filter(|version| !version.is_empty() && version.len() <= 64)
         .map(str::to_owned)
-        .ok_or_else(|| Failure::new("unexpected", "Something went wrong. Try again."))
+        .ok_or_else(|| Failure::new("unexpected", "Something went wrong. Try again."))?;
+    let text = body["texts"]["cloud_voice"]
+        .as_str()
+        .map(|text| clip_bytes(text, 600).to_owned())
+        .filter(|text| !text.trim().is_empty());
+    Ok((version, text))
 }
 
 /// Accepts or withdraws the `cloud_voice` consent on the server.

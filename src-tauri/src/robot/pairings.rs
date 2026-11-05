@@ -145,6 +145,7 @@ mod memory {
         records: BTreeMap<String, String>,
         fail_save: bool,
         fail_read: bool,
+        reads: u32,
     }
 
     impl MemoryPairings {
@@ -161,6 +162,11 @@ mod memory {
 
         pub fn fail_read(&self, fail: bool) {
             self.inner.lock().unwrap().fail_read = fail;
+        }
+
+        /// How many times a key was looked up: each one is a Credential Manager read in the app.
+        pub fn reads(&self) -> u32 {
+            self.inner.lock().unwrap().reads
         }
 
         pub fn has_key(&self, device: &str) -> bool {
@@ -183,7 +189,8 @@ mod memory {
 
     impl PairingStore for MemoryPairings {
         fn key(&self, device: &StableId) -> Result<Option<PairKey>, Fault> {
-            let inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock().unwrap();
+            inner.reads += 1;
             if inner.fail_read {
                 return Err(Fault);
             }

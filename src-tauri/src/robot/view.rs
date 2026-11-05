@@ -28,6 +28,9 @@ pub enum Phase {
     KeyRejected,
     /// Windows Credential Manager could not be read, so the key is unavailable.
     VaultUnavailable,
+    /// The robot announced that its pairing was reset. The key saved here is kept, because
+    /// any device on the port could send that message; the person decides whether to forget it.
+    PairingReset,
     /// Connected and authenticated.
     Ready,
 }

@@ -39,6 +39,9 @@ pub const PAIR_WINDOW_MS: u32 = 30_000;
 /// Slack on top of the window for the robot's `E_TIMEOUT` to arrive.
 const PAIR_GRACE_MS: u64 = 2_000;
 const ERROR_SHOWN_MS: u64 = 5_000;
+/// A real robot repeats its hello once a second. A hello sooner than this after the last one that
+/// was handled is dropped, so a flood costs no Credential Manager read and no new session.
+const HELLO_MIN_GAP_MS: u64 = 500;
 const MAX_PENDING: usize = 8;
 
 /// Capabilities the desktop needs to talk to a robot at all. None: a robot without `usb_pcm` (the
@@ -103,6 +106,9 @@ enum Auth {
     Proving,
     Authenticated,
     Rejected,
+    /// The robot said `pair_reset`. Nothing proves it was the robot, so the key stays here and
+    /// the session is not trusted (no audio) until the person forgets the key or pairs again.
+    Reset,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,6 +172,7 @@ pub struct Session {
     session_counter: u64,
     last_tx: u64,
     last_heartbeat: u64,
+    last_hello_at: Option<u64>,
     muted: bool,
     expression: Expression,
     error: Option<(RobotError, u64)>,
@@ -223,6 +230,7 @@ impl Session {
             session_counter: 0,
             last_tx: now,
             last_heartbeat: now,
+            last_hello_at: None,
             muted: false,
             expression: Expression::Disconnected,
             error: None,
@@ -291,6 +299,15 @@ impl Session {
     }
 
     fn on_hello(&mut self, now: u64, message: &ControlMessage, hello: &Hello) {
+        if self
+            .last_hello_at
+            .is_some_and(|before| now.saturating_sub(before) < HELLO_MIN_GAP_MS)
+        {
+            self.unexpected += 1;
+            return;
+        }
+        self.last_hello_at = Some(now);
+        let was_established = self.stage == Stage::Established;
         // The robot repeats a hello until it hears our answer. Answer a repeat the same way,
         // without starting over.
         if self.stage == Stage::Established
@@ -317,7 +334,7 @@ impl Session {
             }
             self.device = Some(Device {
                 id: hello.device_id.clone(),
-                hw_rev: hello.hw_rev.as_str().to_owned(),
+                hw_rev: crate::text::short_line(hello.hw_rev.as_str(), 32),
                 fw_version: hello.fw_version.as_str().to_owned(),
                 audio: false,
                 paired_on_robot: hello.paired,
@@ -363,7 +380,11 @@ impl Session {
         } else {
             Expression::Idle
         };
-        self.last_heartbeat = now;
+        // A hello is not a heartbeat: only the first of a link counts as proof of life, so hellos
+        // alone cannot keep a link up.
+        if !was_established {
+            self.last_heartbeat = now;
+        }
         if let Some(ack) = ack {
             self.last_ack = Some(ack.clone());
             self.out.push_back(ack);
@@ -386,7 +407,8 @@ impl Session {
         self.error = Some((
             RobotError {
                 code: error_code_text(info.code).to_owned(),
-                detail: info.detail.as_str().to_owned(),
+                // The robot's words are untrusted: bidirectional and zero-width characters go too.
+                detail: crate::text::short_line(info.detail.as_str(), 128),
             },
             now,
         ));
@@ -402,6 +424,14 @@ impl Session {
         }
     }
 
+    /// The only place `Auth::Authenticated` is set. Today the robot is trusted once it accepted
+    /// our proof (or took the new key). The owner decided on 2026-11-05 that the robot must prove
+    /// itself to the desktop as well; when that exists, this function is where the check goes and
+    /// nothing else can reach `Authenticated`.
+    fn grant_authenticated(&mut self) {
+        self.auth = Auth::Authenticated;
+    }
+
     fn on_response(&mut self, now: u64, id: &StableId, error: Option<&ErrorInfo>) {
         let Some(position) = self.pending.iter().position(|pending| &pending.id == id) else {
             self.unexpected += 1;
@@ -411,7 +441,7 @@ impl Session {
         match (pending.kind, error) {
             (PendingKind::Keepalive, None) => {
                 if self.auth == Auth::Proving {
-                    self.auth = Auth::Authenticated;
+                    self.grant_authenticated();
                 }
             }
             (PendingKind::Keepalive, Some(info)) => {
@@ -441,7 +471,7 @@ impl Session {
             (PendingKind::PairSetKey, None) => {
                 if matches!(self.pair, Pair::Saving { .. }) {
                     self.pair = Pair::Idle;
-                    self.auth = Auth::Authenticated;
+                    self.grant_authenticated();
                     if let Some(device) = &mut self.device {
                         device.paired_on_robot = true;
                         device.key_here = true;
@@ -494,17 +524,22 @@ impl Session {
         self.pair = Pair::Saving { since: now };
     }
 
+    /// Protocol step 7 says the desktop forgets its copy when the robot resets. But `pair_reset`
+    /// carries no proof: any device on the port can send it, and forgetting a key on its say-so
+    /// would let it erase a pairing. So the key stays here. The session stops being trusted, and
+    /// the interface offers the choice to forget it. Only an explicit unpair or a new pairing
+    /// removes the key (docs/adr/0006-robot-link.md).
     fn on_pair_reset(&mut self) {
-        // Protocol step 7: the robot wiped its key, so the desktop forgets its copy.
         if self.pair != Pair::Idle {
             self.fail_pairing("interrupted");
         }
-        self.auth = Auth::Unpaired;
         if let Some(device) = &mut self.device {
             device.paired_on_robot = false;
-            device.key_here = false;
-            let id = device.id.clone();
-            let _ = self.pairings.forget(&id);
+            if device.key_here {
+                self.auth = Auth::Reset;
+            } else {
+                self.auth = Auth::Unpaired;
+            }
         }
     }
 
@@ -628,7 +663,9 @@ impl Session {
             && &device.id == device_id
         {
             device.key_here = false;
-            if device.paired_on_robot {
+            if self.auth == Auth::Reset {
+                self.auth = Auth::Unpaired;
+            } else if device.paired_on_robot {
                 self.auth = Auth::NoKey;
             }
         }
@@ -797,6 +834,13 @@ impl Session {
                     Phase::KeyRejected,
                     Some(
                         "Moby did not accept the key saved on this computer. Remove it here, hold Moby's talk button for 10 seconds to reset it, then pair again."
+                            .to_owned(),
+                    ),
+                ),
+                Auth::Reset => (
+                    Phase::PairingReset,
+                    Some(
+                        "Moby says its pairing was reset. Its saved key is still on this computer, because anything plugged into the port could send that message. If you reset Moby yourself, choose Unpair below to forget the key, then pair again. Otherwise leave it."
                             .to_owned(),
                     ),
                 ),

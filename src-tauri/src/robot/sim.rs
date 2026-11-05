@@ -1129,6 +1129,8 @@ impl Connector for SimConnector {
             kind: PortKind::Moby,
             label: "Moby simulator".to_owned(),
             simulated: true,
+            vid: None,
+            pid: None,
         }]
     }
 
