@@ -371,7 +371,7 @@ fn lost_heartbeats_end_the_link_and_it_reconnects_with_a_short_first_wait() {
     }
     assert_eq!(rig.snap().phase, Phase::Reconnecting);
     assert!(
-        waited >= HEARTBEAT_LOSS_MS - 500 && waited <= HEARTBEAT_LOSS_MS + 2_500,
+        (HEARTBEAT_LOSS_MS - 500..=HEARTBEAT_LOSS_MS + 2_500).contains(&waited),
         "{waited}"
     );
     assert_eq!(rig.snap().retry_in_ms, Some(500));

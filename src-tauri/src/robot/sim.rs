@@ -148,26 +148,32 @@ impl SimRobot {
     }
 
     /// Everything the robot has written so far, as a test would read it from the port.
+    #[cfg(test)]
     pub fn take_output(&mut self) -> Vec<u8> {
         self.out.drain(..).collect()
     }
 
+    #[cfg(test)]
     pub fn is_paired(&self) -> bool {
         self.key.is_some()
     }
 
+    #[cfg(test)]
     pub fn key_text(&self) -> Option<String> {
         self.key.as_ref().map(|key| key.as_str().to_owned())
     }
 
+    #[cfg(test)]
     pub fn is_established(&self) -> bool {
         self.established
     }
 
+    #[cfg(test)]
     pub fn is_authenticated(&self) -> bool {
         self.authenticated
     }
 
+    #[cfg(test)]
     pub fn is_waiting_for_button(&self) -> bool {
         self.state == State::Pairing
     }
@@ -287,6 +293,7 @@ impl SimRobot {
     }
 
     /// A frame of robot audio, which a robot without the capability would never send.
+    #[cfg(test)]
     pub fn inject_audio_frame(&mut self) {
         let frame = Frame {
             kind: FrameKind::RobotAudio,
@@ -303,6 +310,7 @@ impl SimRobot {
     }
 
     /// Sends one raw control payload in a valid frame, for malformed-message tests.
+    #[cfg(test)]
     pub fn inject_payload(&mut self, payload: &[u8]) {
         self.frame_out(payload);
     }
