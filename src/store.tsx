@@ -3,8 +3,9 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { api, asFailure, type ApiFailure } from "./api";
 import { buildTurn, exceedsLimit, titleFrom } from "./history";
 import { clearSavedLanguage, loadSavedLanguage, saveLanguageFallback } from "./prefs";
+import { NO_ROBOT, shownExpression } from "./robot";
 import { approvalFrom, toolNote } from "./tools";
-import type { AgentEvent, Approval, ChatMessage, ConversationSummary, Decision, Installation, Language, Profile, UsageInfo } from "./types";
+import type { AgentEvent, Approval, ChatMessage, ConversationSummary, Decision, Installation, Language, Profile, RobotSnapshot, UsageInfo } from "./types";
 
 export type Status = "starting" | "offline" | "signedOut" | "signedIn";
 
@@ -20,7 +21,10 @@ export interface AppState {
   live: string | null;
   sending: boolean;
   chatError: string | null;
+  /** The face to draw: the chat's mood, or the robot's when one is connected and the chat is quiet. A muted robot always shows muted. */
   expression: Expression;
+  /** The robot link, as Rust reports it. */
+  robot: RobotSnapshot;
   /** A dialog from Rust waiting for the person. Only a dialog Rust opened can be answered. */
   approval: Approval | null;
   /** What tools did during the current turn, in the app's own words. */
@@ -74,6 +78,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [sending, setSending] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
   const [expression, setExpression] = useState<Expression>("idle");
+  const [robot, setRobot] = useState<RobotSnapshot>(NO_ROBOT);
   const [approval, setApproval] = useState<Approval | null>(null);
   const [notes, setNotes] = useState<string[]>([]);
   const [language, setLanguageState] = useState<Language>(() => loadSavedLanguage() ?? "uz");
@@ -210,6 +215,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => () => window.clearTimeout(settle.current), []);
 
+  // The robot link belongs to this computer, not to an account, so it starts before anyone signs in.
+  useEffect(() => {
+    let active = true;
+    api
+      .robotSubscribe((next) => {
+        if (active) setRobot(next);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const settleFace = useCallback((next: Expression) => {
     setExpression(next);
     window.clearTimeout(settle.current);
@@ -316,7 +334,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       live,
       sending,
       chatError,
-      expression,
+      expression: shownExpression(expression, sending || approval !== null, robot),
+      robot,
       approval,
       notes,
       answerApproval: async (decision) => {
@@ -442,7 +461,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       chatError,
       conversations,
       enter,
-      expression,
       guard,
       installations,
       language,
@@ -451,6 +469,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       messages,
       profile,
       retentionDays,
+      robot,
+      expression,
       runTurn,
       sending,
       start,

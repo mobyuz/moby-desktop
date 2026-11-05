@@ -1,5 +1,7 @@
 // Shapes mirror moby-api's openapi.json.
 
+import type { Expression } from "@mobyuz/moby-protocol";
+
 export interface Profile {
   id: string;
   email: string;
@@ -135,3 +137,78 @@ export interface ActivityEntry {
   duration_ms: number | null;
   result_code: string | null;
 }
+
+// The robot link. Shapes mirror src-tauri/src/robot/view.rs. No key, proof or nonce is ever in them.
+
+export type RobotPhase =
+  | "disconnected"
+  | "connecting"
+  | "reconnecting"
+  | "incompatible"
+  | "unpaired"
+  | "pairing"
+  | "foreign_paired"
+  | "key_rejected"
+  | "vault_unavailable"
+  | "ready";
+
+export type PairStep = "starting" | "press_button" | "saving";
+
+export interface RobotDevice {
+  id: string;
+  name: string;
+  hw_rev: string;
+  fw_version: string;
+  paired_here: boolean;
+  paired_on_robot: boolean;
+  audio: boolean;
+}
+
+export interface RobotStats {
+  frames_ok: number;
+  bad_crc: number;
+  bad_frame: number;
+  oversized: number;
+  bad_frame_version: number;
+  malformed_json: number;
+  wrong_sender: number;
+  sequence_gaps: number;
+  audio_frames_ignored: number;
+  audio_events_ignored: number;
+  unexpected_messages: number;
+}
+
+export interface RobotSnapshot {
+  phase: RobotPhase;
+  message: string | null;
+  muted: boolean;
+  expression: Expression;
+  device: RobotDevice | null;
+  pair_step: PairStep | null;
+  pair_failure: { code: string; message: string } | null;
+  error: { code: string; detail: string } | null;
+  retry_in_ms: number | null;
+  port: string | null;
+  simulated: boolean;
+  stats: RobotStats;
+}
+
+export interface RobotPort {
+  name: string;
+  kind: "moby" | "other_usb";
+  label: string;
+  simulated: boolean;
+}
+
+export interface PairedRobot {
+  id: string;
+  name: string;
+  created_at: number;
+}
+
+export type RobotDevAction =
+  | { action: "attach"; fresh: boolean; paired_elsewhere: boolean; incompatible: boolean }
+  | { action: "detach" | "press" | "release" | "long_press" | "unplug" | "plug" | "corrupt_frames" | "oversize" | "garbage" }
+  | { action: "mute"; muted: boolean }
+  | { action: "show"; expression: Expression }
+  | { action: "silence"; on: boolean };

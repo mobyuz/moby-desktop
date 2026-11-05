@@ -17,6 +17,12 @@ const PATHS = {
       <path d="M14.5 6.5a4 4 0 0 0-5 5L4 17l3 3 5.5-5.5a4 4 0 0 0 5-5l-2.5 2.5-2.5-.5-.5-2.5z" />
     </>
   ),
+  robot: (
+    <>
+      <rect x="4" y="6" width="16" height="12" rx="4" />
+      <path d="M9 11v2M15 11v2" />
+    </>
+  ),
   activity: <path d="M3 12h4l3-7 4 14 3-7h4" />,
   eye: (
     <>

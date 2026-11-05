@@ -782,3 +782,132 @@ button:disabled {
   color: var(--danger);
   border-color: currentcolor;
 }
+
+/* Robot link */
+
+.robot-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+.robot-card .robot {
+  width: 120px;
+  height: auto;
+}
+
+.robot-detail {
+  margin-top: 6px;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+}
+
+.status-chip::before,
+.robot-button::after {
+  width: 8px;
+  height: 8px;
+  content: "";
+  background: var(--subtle);
+  border-radius: 50%;
+}
+
+.robot-button {
+  position: relative;
+}
+
+.robot-button::after {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+}
+
+.status-chip[data-status="connected"]::before,
+.robot-button[data-status="connected"]::after {
+  background: var(--ok);
+}
+
+.status-chip[data-status="error"]::before,
+.robot-button[data-status="error"]::after {
+  background: var(--danger);
+}
+
+.status-chip[data-status="muted"],
+.status-chip[data-status="disconnected"] {
+  color: var(--subtle);
+}
+
+.status-chip[data-status="pairing"]::before,
+.robot-button[data-status="pairing"]::after {
+  background: var(--text);
+}
+
+.pair-box {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 2px solid var(--text);
+  border-radius: 14px;
+}
+
+.pair-prompt {
+  font-size: 1.15rem;
+  font-weight: 650;
+}
+
+.details-box {
+  margin-top: 12px;
+}
+
+.details-box summary {
+  cursor: pointer;
+}
+
+.details-box summary:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 16px;
+  margin: 8px 0 0;
+}
+
+.stats dt {
+  color: var(--subtle);
+}
+
+.stats dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.dev-panel {
+  padding: 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 14px;
+}
+
+.dev-panel h3 {
+  margin: 12px 0 6px;
+  font-size: 0.95rem;
+}

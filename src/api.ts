@@ -1,5 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { ActivityEntry, AgentEvent, ChatMessage, ConversationSummary, Decision, Installation, Language, Profile, Program, Project, Registry, Reminder, Settings, ToolName, TurnMessage, UsageInfo } from "./types";
+import type { ActivityEntry, AgentEvent, ChatMessage, ConversationSummary, Decision, Installation, Language, PairedRobot, Profile, Program, Project, Registry, Reminder, RobotDevAction, RobotPort, RobotSnapshot, Settings, ToolName, TurnMessage, UsageInfo } from "./types";
 
 /** Every command runs in src-tauri/src (api.rs and store.rs). Tokens and the history file never reach this side. */
 
@@ -62,4 +62,21 @@ export const api = {
   appendMessage: (conversationId: string, message: ChatMessage) => invoke<void>("append_message", { conversationId, message }),
   deleteConversation: (id: string) => invoke<void>("delete_conversation", { id }),
   deleteAllHistory: () => invoke<void>("delete_all_history"),
+
+  // The robot link. Pairing has no arguments: the key is made, kept and used in Rust only.
+  robotSubscribe: (onChange: (snapshot: RobotSnapshot) => void) => {
+    const channel = new Channel<RobotSnapshot>();
+    channel.onmessage = onChange;
+    return invoke<void>("robot_subscribe", { onEvent: channel });
+  },
+  robotPorts: () => invoke<RobotPort[]>("robot_ports"),
+  /** No port means the one that looks like a Moby. A port must be one that robotPorts listed. */
+  robotConnect: (port?: string) => invoke<void>("robot_connect", { port: port ?? null }),
+  robotDisconnect: () => invoke<void>("robot_disconnect"),
+  robotBeginPairing: () => invoke<void>("robot_begin_pairing"),
+  robotCancelPairing: () => invoke<void>("robot_cancel_pairing"),
+  robotDevices: () => invoke<PairedRobot[]>("robot_devices"),
+  robotUnpair: (deviceId: string) => invoke<void>("robot_unpair", { deviceId }),
+  /** The simulator panel. Development builds only; a release build answers not_available. */
+  robotDev: (action: RobotDevAction) => invoke<void>("robot_dev", { action }),
 };

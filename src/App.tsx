@@ -3,16 +3,18 @@ import { EXPRESSION_META } from "./face/expressions";
 import { MobyFace } from "./face/MobyFace";
 import { Icon } from "./icons";
 import { ApprovalDialog } from "./components/ApprovalDialog";
+import { robotStatus, STATUS_LABEL } from "./robot";
 import { Account } from "./screens/Account";
 import { Activity } from "./screens/Activity";
 import { Auth } from "./screens/Auth";
 import { Chat } from "./screens/Chat";
 import { Conversations } from "./screens/Conversations";
+import { Robot } from "./screens/Robot";
 import { Settings } from "./screens/Settings";
 import { Tools } from "./screens/Tools";
 import { AppProvider, useApp } from "./store";
 
-type View = "chat" | "conversations" | "tools" | "activity" | "account" | "settings";
+type View = "chat" | "conversations" | "robot" | "tools" | "activity" | "account" | "settings";
 
 function Shell() {
   const app = useApp();
@@ -51,6 +53,7 @@ function Shell() {
   if (view !== "chat" && (view === "settings" || signedIn)) {
     const page: Record<Exclude<View, "chat">, ReactNode> = {
       conversations: <Conversations onDone={() => setView("chat")} />,
+      robot: <Robot />,
       tools: <Tools />,
       activity: <Activity />,
       account: <Account />,
@@ -117,6 +120,9 @@ function Shell() {
           </button>
           <button className="icon-button" type="button" title="Conversations" aria-label="Conversations" onClick={() => setView("conversations")}>
             <Icon name="chats" />
+          </button>
+          <button className="icon-button robot-button" type="button" data-status={robotStatus(app.robot)} title={`Robot: ${STATUS_LABEL[robotStatus(app.robot)]}`} aria-label={`Robot, ${STATUS_LABEL[robotStatus(app.robot)]}`} onClick={() => setView("robot")}>
+            <Icon name="robot" />
           </button>
           <button className="icon-button" type="button" title="Tools and projects" aria-label="Tools and projects" onClick={() => setView("tools")}>
             <Icon name="tools" />
