@@ -13,6 +13,7 @@ mod scheduler;
 mod store;
 mod text;
 mod tools;
+mod voice;
 
 /// Starts the app. Only one instance runs; a second launch focuses the first window.
 pub fn run() {
@@ -36,7 +37,19 @@ pub fn run() {
                 eprintln!("moby: could not move the history file to the local folder: {error}");
             }
             app.manage(store::Store::open(&dir));
-            app.manage(robot::Robot::start(app.handle().clone()));
+            // The robot link hands finished utterances (and the reasons a stream was thrown away)
+            // to the voice chain through this channel.
+            let (audio_tx, audio_rx) = tokio::sync::mpsc::unbounded_channel();
+            let voice = voice::Voice::new();
+            voice.set_event_sender(audio_tx.clone());
+            app.manage(voice);
+            app.manage(robot::Robot::start(
+                app.handle().clone(),
+                std::sync::Arc::new(move |event| {
+                    let _ = audio_tx.send(event);
+                }),
+            ));
+            voice::start_dispatcher(app.handle().clone(), audio_rx);
             // Launches and clearing the activity log are confirmed in a native window owned by Rust.
             app.manage(agent::Agent::new(std::sync::Arc::new(
                 native::NativeConfirmer::new(app.handle().clone()),
@@ -80,6 +93,13 @@ pub fn run() {
             robot::commands::robot_devices,
             robot::commands::robot_unpair,
             robot::commands::robot_dev,
+            voice::voice_subscribe,
+            voice::voice_status,
+            voice::voice_accept_consent,
+            voice::voice_revoke_consent,
+            voice::voice_cancel,
+            voice::voice_turn,
+            voice::voice_dev_mic,
             store::get_settings,
             store::set_language,
             store::set_retention,

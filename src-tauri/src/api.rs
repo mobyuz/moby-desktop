@@ -31,7 +31,7 @@ const VAULT_SERVICE: &str = "uz.moby.desktop";
 const REFRESH_TOKEN: &str = "refresh-token";
 const INSTALLATION_ID: &str = "installation-id";
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Failure {
     code: String,
     message: String,
@@ -48,6 +48,14 @@ impl Failure {
     #[cfg(test)]
     pub(crate) fn code(&self) -> &str {
         &self.code
+    }
+
+    pub(crate) fn code_str(&self) -> &str {
+        &self.code
+    }
+
+    pub(crate) fn message_str(&self) -> &str {
+        &self.message
     }
 
     fn offline() -> Self {
@@ -145,7 +153,7 @@ fn is_uuid(value: &str) -> bool {
     value.len() == 36 && value.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
-async fn failure_from(response: Response) -> Failure {
+pub(crate) async fn failure_from(response: Response) -> Failure {
     match response.json::<ErrorBody>().await {
         Ok(body) => Failure {
             code: body.code,
@@ -286,26 +294,49 @@ impl Api {
         path: &str,
         body: Option<&Value>,
     ) -> Result<Response, Failure> {
+        self.send_with(method, path, None, |request| match body {
+            Some(body) => request.json(body),
+            None => request,
+        })
+        .await
+    }
+
+    /// Sends one authenticated request that `build` finishes (a body, headers, a query). `build`
+    /// runs again if the access token had to be replaced. With a `timeout`, a request that takes
+    /// longer fails with the code `timeout` instead of `offline`, and dropping the returned future
+    /// drops the request.
+    pub(crate) async fn send_with(
+        &self,
+        method: Method,
+        path: &str,
+        timeout: Option<Duration>,
+        build: impl Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
+    ) -> Result<Response, Failure> {
         let attempt = |token: String| {
-            let mut request = self.request(method.clone(), path).bearer_auth(token);
-            if let Some(body) = body {
-                request = request.json(body);
+            let mut request = build(self.request(method.clone(), path).bearer_auth(token));
+            if let Some(timeout) = timeout {
+                request = request.timeout(timeout);
             }
             request.send()
+        };
+        let failed = |error: reqwest::Error| {
+            if timeout.is_some() && error.is_timeout() {
+                Failure::new("timeout", "Moby's server took too long to answer. Try again.")
+            } else {
+                Failure::offline()
+            }
         };
         let current = self.access.lock().await.clone();
         let token = match current {
             Some(token) => token,
             None => self.refresh(None).await?,
         };
-        let response = attempt(token.clone())
-            .await
-            .map_err(|_| Failure::offline())?;
+        let response = attempt(token.clone()).await.map_err(failed)?;
         if response.status() != StatusCode::UNAUTHORIZED {
             return Ok(response);
         }
         let token = self.refresh(Some(&token)).await?;
-        let response = attempt(token).await.map_err(|_| Failure::offline())?;
+        let response = attempt(token).await.map_err(failed)?;
         if response.status() == StatusCode::UNAUTHORIZED {
             self.forget_session().await?;
             return Err(Failure::signed_out());
@@ -409,8 +440,14 @@ pub async fn forgot_password(api: State<'_, Api>, email: String) -> Result<(), F
 }
 
 #[tauri::command]
-pub async fn sign_out(api: State<'_, Api>, agent: State<'_, Agent>) -> Result<(), Failure> {
+pub async fn sign_out(
+    api: State<'_, Api>,
+    agent: State<'_, Agent>,
+    voice: State<'_, crate::voice::Voice>,
+    robot: State<'_, crate::robot::Robot>,
+) -> Result<(), Failure> {
     crate::agent::begin_sign_out(&api, &agent);
+    voice.cancel(&*robot);
     if let Some(refresh_token) = vault_get(REFRESH_TOKEN)? {
         // Signing out locally still works offline; the server session then expires on its own.
         let _ = api
@@ -462,6 +499,8 @@ pub async fn delete_account(
     api: State<'_, Api>,
     store: State<'_, Store>,
     agent: State<'_, Agent>,
+    voice: State<'_, crate::voice::Voice>,
+    robot: State<'_, crate::robot::Robot>,
     password: String,
 ) -> Result<(), Failure> {
     let account = api.account_id()?;
@@ -491,6 +530,7 @@ pub async fn delete_account(
     // The server has confirmed, so this account's history, registered folders, grants, reminders
     // and activity go too. The session ends either way.
     crate::agent::begin_sign_out(&api, &agent);
+    voice.cancel(&*robot);
     let cleaned = store.with(|db| db.delete_account_data(&account));
     api.forget_session().await?;
     cleaned.map_err(|_| {

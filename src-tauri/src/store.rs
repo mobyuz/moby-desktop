@@ -20,6 +20,7 @@ const DB_FILE: &str = "moby.db";
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_initial.sql"),
     include_str!("../migrations/0002_tools.sql"),
+    include_str!("../migrations/0003_voice_consent.sql"),
 ];
 
 /// Tables whose rows belong to one account.
@@ -218,6 +219,43 @@ impl Db {
         )?)
     }
 
+    /// The account and `cloud_voice` version that accepted voice on this computer, if any.
+    pub(crate) fn voice_consent(&self) -> Result<Option<(String, String)>, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT voice_consent_account, voice_consent_version FROM settings WHERE id = 1",
+            [],
+            |row| {
+                let account: Option<String> = row.get(0)?;
+                let version: Option<String> = row.get(1)?;
+                Ok(account.zip(version))
+            },
+        )?)
+    }
+
+    /// Records the consent with its version, or removes it. Removing takes effect for the very
+    /// next check.
+    pub(crate) fn set_voice_consent(
+        &self,
+        consent: Option<(&str, &str)>,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        if let Some((account, version)) = consent {
+            check_account(account)?;
+            if version.is_empty() || version.len() > 64 {
+                return Err(StoreError::Invalid("voice consent version"));
+            }
+        }
+        self.conn.execute(
+            "UPDATE settings SET voice_consent_account = ?1, voice_consent_version = ?2, voice_consent_at = ?3 WHERE id = 1",
+            params![
+                consent.map(|(account, _)| account),
+                consent.map(|(_, version)| version),
+                consent.map(|_| now)
+            ],
+        )?;
+        Ok(())
+    }
+
     fn set_language(&self, language: &str) -> Result<(), StoreError> {
         if !LANGUAGES.contains(&language) {
             return Err(StoreError::Invalid("language"));
@@ -388,6 +426,11 @@ impl Db {
                 params![user],
             )?;
         }
+        // The voice consent belongs to the account too.
+        tx.execute(
+            "UPDATE settings SET voice_consent_account = NULL, voice_consent_version = NULL, voice_consent_at = NULL WHERE voice_consent_account = ?1",
+            params![user],
+        )?;
         tx.commit()?;
         self.conn.execute_batch("VACUUM")?;
         Ok(())

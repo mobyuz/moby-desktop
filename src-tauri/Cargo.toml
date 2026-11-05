@@ -24,6 +24,8 @@ keyring = "4.2.0"
 # Temporary sibling checkout, as in docs/adr/0001-desktop-foundation.md. Becomes a git tag after the first protocol release.
 moby-protocol = { path = "../../moby-protocol" }
 reqwest = { version = "0.13.5", default-features = false, features = ["native-tls", "json", "stream"] }
+# Playback of the spoken answer on this computer's speakers, and (development builds only) the PC microphone. Exact pin, no decoders: the answer arrives as raw PCM. Recording is a feature of the crate; the code that uses it is compiled out of release builds. See docs/adr/0007-voice-chain.md.
+rodio = { version = "=0.23.0", default-features = false, features = ["playback", "recording"] }
 # Native file dialogs, opened from Rust only. The webview gets no dialog or filesystem plugin.
 rfd = { version = "0.17.2", default-features = false }
 # Pinned exactly: the bundled SQLite is part of the local-data trust base (see docs/adr/0003-local-store.md).
