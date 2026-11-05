@@ -483,7 +483,10 @@ mod tests {
             a.on_frame(at, 3, u32::try_from(at / 1_000 - 1).unwrap(), &[1; 640]);
             a.tick(at);
         }
-        assert_eq!(seen.lock().unwrap().last().unwrap(), "aborted audio_too_long");
+        assert_eq!(
+            seen.lock().unwrap().last().unwrap(),
+            "aborted audio_too_long"
+        );
         assert!((30_000..=32_000).contains(&at), "{at}");
         assert_eq!(a.take_cancels(), [3]);
     }

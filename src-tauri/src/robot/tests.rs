@@ -897,7 +897,10 @@ fn a_forged_pair_reset_cannot_erase_a_pairing_or_start_audio() {
     });
     rig.run(300);
     assert_eq!(rig.snap().phase, Phase::PairingReset);
-    assert!(rig.pairings.has_key(DEVICE), "a message anyone can send did not delete the key");
+    assert!(
+        rig.pairings.has_key(DEVICE),
+        "a message anyone can send did not delete the key"
+    );
     assert!(rig.sim(|robot| robot.is_paired()));
 }
 
@@ -1413,5 +1416,8 @@ fn text_from_the_robot_loses_bidi_and_zero_width_characters() {
     );
     let error = session.snapshot().error.unwrap();
     assert_eq!(error.detail, "finegnp.exex");
-    assert_eq!(super::transport::clean_label("Mo\u{202E}by\u{200B} board"), "Moby board");
+    assert_eq!(
+        super::transport::clean_label("Mo\u{202E}by\u{200B} board"),
+        "Moby board"
+    );
 }

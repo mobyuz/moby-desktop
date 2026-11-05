@@ -12,9 +12,9 @@ use super::service::Robot;
 use super::session::UserError;
 use super::supervisor::{Command, Target};
 use super::transport::{PortInfo, PortKind, plausible_port_name};
-use crate::confirm::{Confirmer, Prompt};
 use super::view::Snapshot;
 use crate::api::Failure;
+use crate::confirm::{Confirmer, Prompt};
 
 impl From<UserError> for Failure {
     fn from(error: UserError) -> Self {
@@ -120,7 +120,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_port_that_is_not_a_moby_needs_a_native_yes_that_shows_its_ids() {
-        let ports = [port("COM3", PortKind::OtherUsb), port("COM4", PortKind::Moby)];
+        let ports = [
+            port("COM3", PortKind::OtherUsb),
+            port("COM4", PortKind::Moby),
+        ];
         let no = Scripted::new(&[false]);
         let error = authorize_port(&ports, "COM3", &no).await.unwrap_err();
         assert_eq!(error.code_str(), "canceled");
@@ -135,7 +138,10 @@ mod tests {
         authorize_port(&ports, "COM4", &none).await.unwrap();
         assert!(none.shown().is_empty());
         assert_eq!(
-            authorize_port(&ports, "COM9", &none).await.unwrap_err().code_str(),
+            authorize_port(&ports, "COM9", &none)
+                .await
+                .unwrap_err()
+                .code_str(),
             "not_found"
         );
     }
