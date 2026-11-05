@@ -75,6 +75,10 @@ Early development. Features appear in the app once they work end to end.
 | Registered folders and programs, read grants, approval dialog, activity log, reminders | ✅ |
 | Signed updates, installer distribution | 🔜 |
 
+### Checking that a release build has no development code
+
+After `cargo build --release --locked` in `src-tauri`, run `powershell -File scripts/check-release-excludes-dev.ps1 src-tauri/target/release/moby-desktop.exe`. It fails if the binary contains the robot simulator or the PC microphone path. To see that the check can find them, run it with `-ExpectPresent` on a test binary (`src-tauri/target/debug/deps/moby_desktop_lib-<hash>.exe`). CI runs the first form.
+
 ## Architecture
 
 ```mermaid

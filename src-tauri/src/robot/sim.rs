@@ -155,6 +155,9 @@ pub struct SimRobot {
 
 impl SimRobot {
     pub fn new(device_id: &str) -> Self {
+        // Keeps the marker in every binary that contains the simulator (tests too), so the
+        // release check has something to find in a binary that must have it.
+        std::hint::black_box(SIMULATOR_MARKER);
         Self {
             device_id: device_id.to_owned(),
             protocol_version: PROTOCOL_VERSION,
