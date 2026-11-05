@@ -169,6 +169,32 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 ```
 
+### Running against a real moby-api
+
+`cargo test` never talks to a real server: the other tests use a stub. One ignored test, `agent::e2e::real_api_end_to_end`, uses this app's real API client, agent loop, tool code, local store and voice client against a real moby-api with its **mock** language model and **mock** speech providers (nothing paid, no key). It registers a generated test account, confirms it from the local mail catcher, signs in, restores the session, signs out, runs text and `git status` turns against a temporary repo, checks that `local_time` is accepted, denies a launch through an injected confirmer (and checks that nothing ran), walks through voice consent, speech to text, text to speech, revocation and the refusal after it, and deletes the account. It prints `ok`, `info` and `MISMATCH` lines and fails if the real API differs from what the stub tests assume. It does not open a window, use the microphone or play sound, and it keeps its own sign-in entries in the Credential Manager (`uz.moby.desktop.test`) and removes them at the end.
+
+Start moby-api with its test providers (from the moby-api checkout, on a database you can throw away), then run the test from `src-tauri`:
+
+```powershell
+# moby-api: database and mail catcher in containers, the API on the host
+docker compose -p moby-e2e up --detach --wait postgres mailpit
+$env:DATABASE_URL = 'postgres://moby:moby_dev@127.0.0.1:55432/moby?sslmode=disable'
+$env:MOBY_LLM_PROVIDER = 'mock'; $env:MOBY_DEMO_LLM_PROVIDER = 'mock'; $env:MOBY_VOICE_ENABLED = 'true'
+cargo run --locked        # leave it running; it listens on 127.0.0.1:8080
+
+# this repository, in another shell
+$env:MOBY_E2E_API_URL = 'http://127.0.0.1:8080'
+$env:MOBY_E2E_MAIL_URL = 'http://127.0.0.1:8025'   # optional; this is the default
+Set-Location src-tauri
+cargo build --example test_helper   # the harmless program the denied-launch check registers
+cargo test --locked --lib real_api_end_to_end -- --ignored --nocapture
+
+# afterwards
+docker compose -p moby-e2e down --volumes
+```
+
+`MOBY_E2E_API_URL` must be an `http://127.0.0.1` or `localhost` address (or HTTPS), as for the app itself. Without it the test fails at once with a reminder.
+
 ### Build the app
 
 ```powershell

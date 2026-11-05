@@ -27,9 +27,14 @@ const PRIVACY_POLICY_VERSION: &str = match option_env!("MOBY_PRIVACY_POLICY_VERS
     None => "dev-1",
 };
 
-const VAULT_SERVICE: &str = "uz.moby.desktop";
-const REFRESH_TOKEN: &str = "refresh-token";
-const INSTALLATION_ID: &str = "installation-id";
+/// Tests use their own vault entries, so running them never touches the installed app's sign-in.
+const VAULT_SERVICE: &str = if cfg!(test) {
+    "uz.moby.desktop.test"
+} else {
+    "uz.moby.desktop"
+};
+pub(crate) const REFRESH_TOKEN: &str = "refresh-token";
+pub(crate) const INSTALLATION_ID: &str = "installation-id";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Failure {
@@ -163,7 +168,7 @@ pub(crate) async fn failure_from(response: Response) -> Failure {
     }
 }
 
-async fn read_json(response: Response) -> Result<Value, Failure> {
+pub(crate) async fn read_json(response: Response) -> Result<Value, Failure> {
     if !response.status().is_success() {
         return Err(failure_from(response).await);
     }
@@ -192,7 +197,7 @@ impl Api {
         Self::new_with(value)
     }
 
-    fn new_with(value: &str) -> Self {
+    pub(crate) fn new_with(value: &str) -> Self {
         let base =
             parse_base_url(value).expect("MOBY_API_URL must be https, or http on this computer");
         let http = Client::builder()
@@ -288,7 +293,7 @@ impl Api {
         }
     }
 
-    async fn send(
+    pub(crate) async fn send(
         &self,
         method: Method,
         path: &str,
@@ -369,6 +374,10 @@ impl Api {
 
 #[tauri::command]
 pub async fn restore_session(api: State<'_, Api>) -> Result<Option<Value>, Failure> {
+    restore_session_of(&api).await
+}
+
+pub(crate) async fn restore_session_of(api: &Api) -> Result<Option<Value>, Failure> {
     if vault_get(REFRESH_TOKEN)?.is_none() {
         return Ok(None);
     }
@@ -389,11 +398,15 @@ pub async fn sign_in(
     email: String,
     password: String,
 ) -> Result<Value, Failure> {
+    sign_in_with(&api, &email, &password).await
+}
+
+pub(crate) async fn sign_in_with(api: &Api, email: &str, password: &str) -> Result<Value, Failure> {
     let known = vault_get(INSTALLATION_ID)?;
-    let mut response = api.login(&email, &password, known.as_deref()).await?;
+    let mut response = api.login(email, password, known.as_deref()).await?;
     // The saved computer may be revoked or belong to another account. The API answers both like a wrong password.
     if response.status() == StatusCode::UNAUTHORIZED && known.is_some() {
-        response = api.login(&email, &password, None).await?;
+        response = api.login(email, password, None).await?;
     }
     if !response.status().is_success() {
         return Err(failure_from(response).await);
@@ -409,6 +422,10 @@ pub async fn sign_in(
 
 #[tauri::command]
 pub async fn register(api: State<'_, Api>, email: String, password: String) -> Result<(), Failure> {
+    register_with(&api, &email, &password).await
+}
+
+pub(crate) async fn register_with(api: &Api, email: &str, password: &str) -> Result<(), Failure> {
     let response = api
         .request(Method::POST, "/v1/auth/register")
         .json(&json!({
@@ -449,8 +466,17 @@ pub async fn sign_out(
     voice: State<'_, crate::voice::Voice>,
     robot: State<'_, crate::robot::Robot>,
 ) -> Result<(), Failure> {
-    crate::agent::begin_sign_out(&api, &agent);
-    voice.cancel(&*robot);
+    sign_out_of(&api, &agent, &voice, &*robot).await
+}
+
+pub(crate) async fn sign_out_of(
+    api: &Api,
+    agent: &Agent,
+    voice: &crate::voice::Voice,
+    robot: &dyn crate::voice::RobotControl,
+) -> Result<(), Failure> {
+    crate::agent::begin_sign_out(api, agent);
+    voice.cancel(robot);
     if let Some(refresh_token) = vault_get(REFRESH_TOKEN)? {
         // Signing out locally still works offline; the server session then expires on its own.
         let _ = api
@@ -506,6 +532,17 @@ pub async fn delete_account(
     robot: State<'_, crate::robot::Robot>,
     password: String,
 ) -> Result<(), Failure> {
+    delete_account_of(&api, &store, &agent, &voice, &*robot, &password).await
+}
+
+pub(crate) async fn delete_account_of(
+    api: &Api,
+    store: &Store,
+    agent: &Agent,
+    voice: &crate::voice::Voice,
+    robot: &dyn crate::voice::RobotControl,
+    password: &str,
+) -> Result<(), Failure> {
     let account = api.account_id()?;
     let check = api.send(Method::GET, "/v1/me", None).await?;
     if !check.status().is_success() {
@@ -532,8 +569,8 @@ pub async fn delete_account(
     }
     // The server has confirmed, so this account's history, registered folders, grants, reminders
     // and activity go too. The session ends either way.
-    crate::agent::begin_sign_out(&api, &agent);
-    voice.cancel(&*robot);
+    crate::agent::begin_sign_out(api, agent);
+    voice.cancel(robot);
     let cleaned = store.with(|db| db.delete_account_data(&account));
     api.forget_session().await?;
     cleaned.map_err(|_| {
