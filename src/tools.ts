@@ -1,4 +1,4 @@
-import type { ActivityEntry, Approval, AgentEvent, Grant, Registry, SessionGrant, ToolName } from "./types";
+import type { ActivityEntry, Approval, AgentEvent, Decision, Grant, Registry, SessionGrant, ToolName } from "./types";
 
 /** Safe default of the approval dialog: it starts on this, and no timeout or key press approves. */
 export const SAFE_DECISION = "deny" as const;
@@ -60,9 +60,34 @@ export function approvalFrom(event: Extract<AgentEvent, { event: "approval_requi
     title: event.title,
     details: event.details,
     mobySays: event.moby_says,
-    allowSession: event.allow_session,
     timeoutMs: event.timeout_ms,
   };
+}
+
+export interface DialogButton {
+  decision: Decision;
+  label: string;
+  disabled: boolean;
+}
+
+/** The buttons of the in-page dialog, in order. Deny comes first, is the one that gets focus, and is never disabled. */
+export function approvalButtons(armed: boolean): DialogButton[] {
+  return [
+    { decision: SAFE_DECISION, label: "Deny", disabled: false },
+    { decision: "once", label: "Allow once", disabled: !armed },
+  ];
+}
+
+export interface DialogText {
+  title: string;
+  details: string[];
+  /** Shown apart, labelled as not checked. */
+  untrusted: string | null;
+}
+
+/** What the dialog shows. The model's words go only to `untrusted`, never into the title or the details. */
+export function approvalText(approval: Approval): DialogText {
+  return { title: approval.title, details: approval.details, untrusted: approval.mobySays };
 }
 
 export type ReadTool = Extract<ToolName, "git_status" | "search_files">;
@@ -93,12 +118,6 @@ export function resourceName(registry: Registry, id: string | null): string {
   const project = registry.projects.find((item) => item.id === id || item.id.replace(/^proj_/, "root_") === id);
   if (project) return project.name;
   return registry.apps.find((item) => item.id === id)?.name ?? "(removed)";
-}
-
-export function sessionGrantLabel(registry: Registry, grant: SessionGrant): string {
-  const [first, second] = grant.key.split("+");
-  const parts = [first, second].filter((part): part is string => part !== undefined && part !== "explorer").map((part) => resourceName(registry, part));
-  return `${toolLabel(grant.tool)}: ${parts.join(" in ") || "Windows Explorer"}`;
 }
 
 export function activityLine(entry: ActivityEntry): string {

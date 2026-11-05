@@ -3,7 +3,9 @@ use tauri::Manager;
 mod agent;
 mod api;
 mod commands;
+mod confirm;
 mod grants;
+mod native;
 mod paths;
 mod registry;
 mod robot;
@@ -24,7 +26,6 @@ pub fn run() {
         // Used from Rust only (scheduler.rs). The capability set stays empty, so the webview cannot call it.
         .plugin(tauri_plugin_notification::init())
         .manage(api::Api::new())
-        .manage(agent::Agent::new())
         .setup(|app| {
             // %LOCALAPPDATA%\uz.moby.desktop: history stays on this computer and does not roam.
             // If the file cannot be opened the app still starts, without saving.
@@ -36,6 +37,10 @@ pub fn run() {
             }
             app.manage(store::Store::open(&dir));
             app.manage(robot::Robot::start(app.handle().clone()));
+            // Launches and clearing the activity log are confirmed in a native window owned by Rust.
+            app.manage(agent::Agent::new(std::sync::Arc::new(
+                native::NativeConfirmer::new(app.handle().clone()),
+            )));
             scheduler::start(app.handle().clone());
             Ok(())
         })

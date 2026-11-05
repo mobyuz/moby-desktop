@@ -18,6 +18,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use moby_protocol::ToolFailureCode;
 
@@ -136,27 +137,38 @@ enum Kind {
     Conflicted,
 }
 
-fn first_failure<T>(result: Result<T, ToolFailureCode>) -> Result<T, ToolFailureCode> {
-    result
-}
-
 /// Status of the registered project. `cancel` is shared with the caller, who sets it on timeout
 /// or when the person cancels; the walk checks it between steps.
-pub fn status(project: &VerifiedDir, cancel: &Arc<AtomicBool>) -> Result<Summary, ToolFailureCode> {
-    if cancel.load(Ordering::Relaxed) {
-        return Err(ToolFailureCode::Canceled);
-    }
+pub fn status(
+    project: &VerifiedDir,
+    cancel: &Arc<AtomicBool>,
+    deadline: Instant,
+) -> Result<Summary, ToolFailureCode> {
+    status_with(project, cancel, deadline, MAX_WALK)
+}
+
+pub(crate) fn status_with(
+    project: &VerifiedDir,
+    cancel: &Arc<AtomicBool>,
+    deadline: Instant,
+    max_walk: usize,
+) -> Result<Summary, ToolFailureCode> {
+    check_stop(cancel, deadline)?;
     // `.git` must be a real folder right inside the project: not a link, not a `gitdir:` file that
     // points somewhere we did not register.
     let dot_git = Path::new(&project.path).join(".git");
     if !is_plain_dir(&dot_git) {
         return Err(ToolFailureCode::Unavailable);
     }
+    // Files inside `.git` that make gix read another folder (possibly a network share).
+    refuse_redirects(&dot_git)?;
+    check_stop(cancel, deadline)?;
     let repo =
         gix::open_opts(project.os(), safe_open_options()).map_err(|_| ToolFailureCode::Failed)?;
-    if repo.is_bare() {
+    if repo.is_bare() || !same_place(repo.common_dir(), repo.git_dir()) {
         return Err(ToolFailureCode::Unavailable);
     }
+    check_stop(cancel, deadline)?;
     // `core.worktree` can move the working tree anywhere. The answer must be about the registered folder.
     let workdir = repo
         .workdir()
@@ -195,7 +207,9 @@ pub fn status(project: &VerifiedDir, cancel: &Arc<AtomicBool>) -> Result<Summary
     };
 
     // A submodule is a repository we deliberately do not open, so its state is unknown.
+    // Reading the index cannot be interrupted once started; the checks around it bound the damage.
     let index = repo.index_or_empty().map_err(|_| ToolFailureCode::Failed)?;
+    check_stop(cancel, deadline)?;
     let has_submodules = index
         .entries()
         .iter()
@@ -219,9 +233,7 @@ pub fn status(project: &VerifiedDir, cancel: &Arc<AtomicBool>) -> Result<Summary
 
     let mut seen = 0_usize;
     for item in iter {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(ToolFailureCode::Canceled);
-        }
+        check_stop(cancel, deadline)?;
         let item = item.map_err(|_| ToolFailureCode::PartialResult)?;
         seen += 1;
         if seen > MAX_ITEMS {
@@ -270,23 +282,86 @@ pub fn status(project: &VerifiedDir, cancel: &Arc<AtomicBool>) -> Result<Summary
                 .push((letter, clean_name(item.location().as_ref(), 120)));
         }
     }
-    if cancel.load(Ordering::Relaxed) {
-        return Err(ToolFailureCode::Canceled);
-    }
-    first_failure(Ok(()))?;
+    check_stop(cancel, deadline)?;
 
-    compare_with_upstream(&repo, &mut summary);
+    compare_with_upstream(&repo, &mut summary, cancel, deadline, max_walk)?;
     Ok(summary)
+}
+
+fn check_stop(cancel: &AtomicBool, deadline: Instant) -> Result<(), ToolFailureCode> {
+    if cancel.load(Ordering::Relaxed) {
+        Err(ToolFailureCode::Canceled)
+    } else if Instant::now() >= deadline {
+        Err(ToolFailureCode::Timeout)
+    } else {
+        Ok(())
+    }
+}
+
+fn same_place(a: &Path, b: &Path) -> bool {
+    let canon = |p: &Path| {
+        p.to_str()
+            .and_then(|s| paths::canonical_of(s.trim_end_matches(['\\', '/'])).ok())
+    };
+    matches!((canon(a), canon(b)), (Some(x), Some(y)) if x.eq_ignore_ascii_case(&y))
+}
+
+/// Entries of the repository folder that gix follows to wherever their contents point, or that
+/// could be links to another place. Checked without following links. Any of them means this is not
+/// a plain, self-contained repository, and nothing is opened.
+fn refuse_redirects(dot_git: &Path) -> Result<(), ToolFailureCode> {
+    // Files that name another folder: a shared repository, a linked worktree, borrowed objects.
+    for name in ["commondir", "gitdir", "objects\\info\\alternates"] {
+        match std::fs::symlink_metadata(dot_git.join(name)) {
+            Ok(_) => return Err(ToolFailureCode::Unavailable),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(ToolFailureCode::Unavailable),
+        }
+    }
+    // Links among the folders gix reads from. The top level of `.git` and of `objects`, and the
+    // whole of `refs` up to a bound.
+    let mut budget = 5000_usize;
+    let mut stack = vec![
+        (dot_git.to_path_buf(), 1_u8),
+        (dot_git.join("objects"), 1),
+        (dot_git.join("refs"), 6),
+    ];
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            budget = budget
+                .checked_sub(1)
+                .ok_or(ToolFailureCode::PartialResult)?;
+            let Ok(meta) = entry.metadata() else {
+                return Err(ToolFailureCode::Unavailable);
+            };
+            if paths::is_reparse(&meta) {
+                return Err(ToolFailureCode::Unavailable);
+            }
+            if meta.is_dir() && depth > 1 {
+                stack.push((entry.path(), depth - 1));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Fills in the upstream name and the ahead/behind counts when the branch tracks something. A
 /// failure here leaves the counts out instead of failing the whole answer.
-fn compare_with_upstream(repo: &gix::Repository, summary: &mut Summary) {
+fn compare_with_upstream(
+    repo: &gix::Repository,
+    summary: &mut Summary,
+    cancel: &AtomicBool,
+    deadline: Instant,
+    max_walk: usize,
+) -> Result<(), ToolFailureCode> {
     if summary.detached {
-        return;
+        return Ok(());
     }
     let Ok(Some(head)) = repo.head_name() else {
-        return;
+        return Ok(());
     };
     // gix's own lookup ignores repository config because of the filter above, so the two plain
     // settings are read here. They only name a reference; nothing is run from them.
@@ -296,43 +371,53 @@ fn compare_with_upstream(repo: &gix::Repository, summary: &mut Summary) {
         config.string(format!("branch.{short}.remote").as_str()),
         config.string(format!("branch.{short}.merge").as_str()),
     ) else {
-        return;
+        return Ok(());
     };
     let (remote, merge) = (remote.to_string(), merge.to_string());
     let Some(branch) = merge.strip_prefix("refs/heads/") else {
-        return;
+        return Ok(());
     };
     if remote == "." || remote.is_empty() || remote.contains(['\\', ':', ' ']) {
-        return;
+        return Ok(());
     }
     let Ok(upstream_name) =
         gix::refs::FullName::try_from(format!("refs/remotes/{remote}/{branch}"))
     else {
-        return;
+        return Ok(());
     };
     summary.upstream = Some(clean_name(upstream_name.shorten(), 80));
     let (Ok(local), Ok(mut upstream)) =
         (repo.head_id(), repo.find_reference(upstream_name.as_ref()))
     else {
-        return;
+        return Ok(());
     };
     let Ok(upstream) = upstream.peel_to_id() else {
-        return;
+        return Ok(());
     };
-    let count = |from: gix::ObjectId, hidden: gix::ObjectId| -> Option<usize> {
-        let walk = repo.rev_walk([from]).with_hidden([hidden]).all().ok()?;
-        let mut n = 0;
-        for commit in walk {
-            commit.ok()?;
-            n += 1;
-            if n > MAX_WALK {
-                return None;
+    // The walk with a hidden tip may read many commits before it yields the first one, and that
+    // part cannot be interrupted. Between commits it stops on cancel and deadline, and past
+    // `max_walk` commits the whole answer is partial.
+    let count =
+        |from: gix::ObjectId, hidden: gix::ObjectId| -> Result<Option<usize>, ToolFailureCode> {
+            let Ok(walk) = repo.rev_walk([from]).with_hidden([hidden]).all() else {
+                return Ok(None);
+            };
+            let mut n = 0;
+            for commit in walk {
+                check_stop(cancel, deadline)?;
+                if commit.is_err() {
+                    return Ok(None);
+                }
+                n += 1;
+                if n > max_walk {
+                    return Err(ToolFailureCode::PartialResult);
+                }
             }
-        }
-        Some(n)
-    };
-    summary.ahead = count(local.detach(), upstream.detach());
-    summary.behind = count(upstream.detach(), local.detach());
+            Ok(Some(n))
+        };
+    summary.ahead = count(local.detach(), upstream.detach())?;
+    summary.behind = count(upstream.detach(), local.detach())?;
+    Ok(())
 }
 
 #[cfg(test)]

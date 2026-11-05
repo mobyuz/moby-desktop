@@ -64,15 +64,18 @@ export type AgentEvent =
       details: string[];
       /** What the model said alongside the request. Untrusted. */
       moby_says: string | null;
-      allow_session: boolean;
       timeout_ms: number;
     }
+  /** A launch is confirmed in a native window that Rust owns. The page only shows that it is waiting. */
+  | { event: "native_prompt"; title: string }
+  | { event: "native_prompt_closed" }
   | { event: "approval_closed"; approval_id: string; outcome: "approved" | "denied" | "expired" | "canceled" }
   | { event: "tool_result"; tool: ToolName; description: string; outcome: string; note: string }
   | { event: "completed"; speech_text: string; display_text: string | null; expression_hint: string }
   | { event: "error"; error: { code: string; message: string } };
 
-export type Decision = "deny" | "once" | "session";
+/** Only reminders are answered in the page. Launches are confirmed in a native window, so there is nothing to approve here. */
+export type Decision = "deny" | "once";
 
 export interface Approval {
   id: string;
@@ -80,21 +83,21 @@ export interface Approval {
   title: string;
   details: string[];
   mobySays: string | null;
-  allowSession: boolean;
   timeoutMs: number;
 }
 
 export interface Project {
   id: string;
   name: string;
-  path: string;
+  /** The last two parts of the location. The full path never reaches the page. */
+  short_path: string;
   created_at: number;
 }
 
 export interface Program {
   id: string;
   name: string;
-  path: string;
+  short_path: string;
   created_at: number;
 }
 

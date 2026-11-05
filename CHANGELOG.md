@@ -4,7 +4,9 @@
 
 - Robot link over USB (stage D3): connect to Moby, answer its hello, keep the session alive, pair with the talk button, and show connected, muted, pairing and error states with the face following the robot. Tested against a built-in simulator; **not yet tried on a real robot**. A **Robot** page shows status, pairing and paired robots, and in development builds a panel drives the simulator.
 - Safe local tools: Moby can read a registered project's Git status (in process, without starting `git`), search its file names, create reminders with a Windows notification, and, after you confirm on screen, open a program or a project. The agent loop moved into Rust, so the interface can only approve or deny a dialog Rust opened.
-- **Tools and projects** and **Activity** pages, an approval dialog that starts on Deny, read permissions you can revoke, and a working activity log that stores decisions only.
+- **Tools and projects** and **Activity** pages, an in-page dialog for reminders that starts on Deny, read permissions you can revoke, and a working activity log that stores decisions only.
+- Every program or project launch is confirmed on its own, in a separate Windows window that the chat page cannot click (OK / Cancel, Cancel is the default). There is no "always" or "this session" for launches. Clearing the activity log is confirmed the same way. (Owner decision, 2026-11-05.)
+- `git_status` refuses repositories that point at other folders or network shares (`commondir`, `alternates`, `gitdir`) and links inside `.git`, and stops on cancel and timeout. Shells, script hosts and launchers cannot be added as programs. The page sees only the last two parts of a folder's location.
 - Windows path checks before every use of a registered folder or program, and a test corpus with real junctions.
 - History now lives in `%LOCALAPPDATA%` (existing files move there once). Deleting your account deletes its local data too, and Delete all history says it covers every account on this Windows user.
 

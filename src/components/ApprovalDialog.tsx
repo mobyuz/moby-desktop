@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useApp } from "../store";
-import { ARM_DELAY_MS } from "../tools";
+import { approvalButtons, approvalText, ARM_DELAY_MS, SAFE_DECISION } from "../tools";
 
 /**
  * The only place a local action is approved. It opens only for a dialog Rust issued, shows the
@@ -28,6 +28,7 @@ export function ApprovalDialog() {
   }, [id]);
 
   if (!approval) return null;
+  const text = approvalText(approval);
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
@@ -53,36 +54,37 @@ export function ApprovalDialog() {
     <div className="scrim">
       <div ref={boxRef} className="dialog" role="alertdialog" aria-modal="true" aria-labelledby="approval-title" aria-describedby="approval-body" onKeyDown={onKeyDown}>
         <p className="eyebrow">Moby wants to do something on this computer</p>
-        <h2 id="approval-title">{approval.title}</h2>
+        <h2 id="approval-title">{text.title}</h2>
         <div id="approval-body">
-          {approval.details.length > 0 && (
+          {text.details.length > 0 && (
             <ul className="details">
-              {approval.details.map((line) => (
+              {text.details.map((line) => (
                 <li key={line}>{line}</li>
               ))}
             </ul>
           )}
-          {approval.mobySays && (
+          {text.untrusted && (
             <div className="says">
               <strong>Moby says (not checked):</strong>
-              <q>{approval.mobySays}</q>
+              <q>{text.untrusted}</q>
               <span className="hint">This is the model&rsquo;s own text. It does not change what will happen.</span>
             </div>
           )}
           <p className="hint">If you don&rsquo;t answer in {Math.round(approval.timeoutMs / 1000)} seconds, it counts as Deny.</p>
         </div>
         <div className="row dialog-actions">
-          <button ref={denyRef} className="primary" type="button" onClick={() => void app.answerApproval("deny")}>
-            Deny
-          </button>
-          <button className="secondary" type="button" disabled={!armed} onClick={() => void app.answerApproval("once")}>
-            Allow once
-          </button>
-          {approval.allowSession && (
-            <button className="secondary" type="button" disabled={!armed} onClick={() => void app.answerApproval("session")}>
-              Allow for this session
+          {approvalButtons(armed).map((button) => (
+            <button
+              key={button.decision}
+              ref={button.decision === SAFE_DECISION ? denyRef : undefined}
+              className={button.decision === SAFE_DECISION ? "primary" : "secondary"}
+              type="button"
+              disabled={button.disabled}
+              onClick={() => void app.answerApproval(button.decision)}
+            >
+              {button.label}
             </button>
-          )}
+          ))}
         </div>
       </div>
     </div>

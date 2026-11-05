@@ -8,11 +8,14 @@ use std::net::TcpListener;
 use serde_json::{Value, json};
 
 use super::*;
+use crate::confirm::testing::Scripted;
 use crate::paths::testing::{Scratch, helper_exe};
 use crate::registry::{App, Project};
 
 const USER: &str = "alice";
 
+type AgentSlot = Arc<Mutex<Option<(Arc<Agent>, u64)>>>;
+type AgentApiSlot = Arc<Mutex<Option<(Arc<Agent>, Arc<Api>)>>>;
 type Script = Box<dyn Fn(usize, &Value) -> Vec<String> + Send + Sync>;
 
 struct Stub {
@@ -96,8 +99,8 @@ fn speech(text: &str) -> String {
 struct World {
     scratch: Scratch,
     store: Store,
-    api: Api,
-    agent: Agent,
+    api: Arc<Api>,
+    agent: Arc<Agent>,
     project: Project,
     app: App,
     exe: String,
@@ -108,11 +111,19 @@ impl World {
     fn new(script: Script) -> Self {
         Self::with_agent(
             script,
-            Agent::with_timeouts(Duration::from_secs(30), Duration::from_secs(10)),
+            Agent::with_timeouts(
+                Duration::from_secs(30),
+                Duration::from_secs(10),
+                Arc::new(Scripted::new(&[])),
+            ),
         )
     }
 
     fn with_agent(script: Script, agent: Agent) -> Self {
+        Self::with_agent_arc(script, Arc::new(agent))
+    }
+
+    fn with_agent_arc(script: Script, agent: Arc<Agent>) -> Self {
         let scratch = Scratch::new();
         let store = Store::open(&scratch.path("data"));
         let folder = scratch.dir("proj");
@@ -133,7 +144,7 @@ impl World {
             .with(|db| db.add_app(USER, "Tool", &program.path, now_ms()))
             .unwrap();
         let stub = stub(script);
-        let api = Api::signed_in_for_test(&stub.url, USER);
+        let api = Arc::new(Api::signed_in_for_test(&stub.url, USER));
         Self {
             scratch,
             store,
@@ -320,6 +331,33 @@ async fn a_granted_read_tool_runs_without_asking_and_its_output_is_fenced_and_cl
     ));
 }
 
+#[test]
+fn local_time_keeps_the_offset_and_its_sign() {
+    let at = |hours, minutes| {
+        time::OffsetDateTime::new_in_offset(
+            time::Date::from_calendar_date(2026, time::Month::November, 5).unwrap(),
+            time::Time::from_hms(9, 30, 0).unwrap(),
+            time::UtcOffset::from_hms(hours, minutes, 0).unwrap(),
+        )
+    };
+    let text = |value| format_local_time(value).unwrap().as_str().to_owned();
+    assert_eq!(text(at(5, 0)), "2026-11-05T09:30:00+05:00");
+    assert_eq!(text(at(-3, -30)), "2026-11-05T09:30:00-03:30");
+    assert_eq!(text(at(0, -30)), "2026-11-05T09:30:00-00:30");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_request_tells_the_model_the_local_time() {
+    let world = World::new(Box::new(|_, _| vec![done()]));
+    let person = Person::silent(&world);
+    world.run(&person).await.unwrap();
+    let sent = world.stub.requests()[0]["local_time"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    LocalTime::try_from(sent).unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_request_carries_only_what_is_registered_and_granted_and_no_paths() {
     let world = World::new(Box::new(|_, _| vec![done()]));
@@ -368,213 +406,7 @@ async fn the_request_carries_only_what_is_registered_and_granted_and_no_paths() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_denied_launch_never_runs_and_the_model_is_told() {
-    let app = Arc::new(Mutex::new(Value::Null));
-    let a2 = Arc::clone(&app);
-    let world = World::new(Box::new(move |index, _| {
-        if index == 0 {
-            vec![
-                speech("Opening it."),
-                call("c1", a2.lock().unwrap().clone()),
-            ]
-        } else {
-            vec![done()]
-        }
-    }));
-    *app.lock().unwrap() = open_app(&world);
-    let person = Person::new(&world, |_, _| Some(Decision::Deny));
-    world.run(&person).await.unwrap();
-
-    assert!(!world.ran(), "denied means the program never started");
-    let result = tool_result_in(&world.stub.requests()[1]);
-    assert_eq!(
-        (result["status"].as_str(), result["code"].as_str()),
-        (Some("error"), Some("denied"))
-    );
-    assert_eq!(
-        world.audit(),
-        [("open_app".into(), "denied".into(), Some("denied".into()))]
-    );
-    let shown = person
-        .events()
-        .into_iter()
-        .find_map(|e| {
-            if let UiEvent::ApprovalRequired {
-                title,
-                details,
-                moby_says,
-                ..
-            } = e
-            {
-                Some((title, details, moby_says))
-            } else {
-                None
-            }
-        })
-        .unwrap();
-    assert_eq!(shown.0, "Open Tool", "the sentence is written by the app");
-    assert_eq!(
-        shown.2.as_deref(),
-        Some("Opening it."),
-        "model commentary is kept apart"
-    );
-    assert!(shown.1[0].starts_with("Program: "));
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn approving_once_runs_it_once_and_the_next_call_asks_again() {
-    let app = Arc::new(Mutex::new(Value::Null));
-    let a2 = Arc::clone(&app);
-    let world = World::new(Box::new(move |index, _| match index {
-        0 => vec![call("c1", a2.lock().unwrap().clone())],
-        1 => vec![call("c2", a2.lock().unwrap().clone())],
-        _ => vec![done()],
-    }));
-    *app.lock().unwrap() = open_app(&world);
-    let person = Person::new(&world, |_, n| {
-        Some(if n == 1 {
-            Decision::Once
-        } else {
-            Decision::Deny
-        })
-    });
-    world.run(&person).await.unwrap();
-    assert_eq!(person.approvals(), 2);
-    assert!(world.ran(), "the first approval launched the helper");
-    assert_eq!(tool_result_in(&world.stub.requests()[1])["status"], "ok");
-    assert_eq!(tool_result_in(&world.stub.requests()[2])["code"], "denied");
-    assert_eq!(
-        world
-            .audit()
-            .iter()
-            .map(|a| a.1.as_str())
-            .collect::<Vec<_>>(),
-        ["approved_once", "denied"]
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_session_approval_covers_later_calls_until_the_session_ends() {
-    let app = Arc::new(Mutex::new(Value::Null));
-    let a2 = Arc::clone(&app);
-    let world = World::new(Box::new(move |index, _| match index {
-        0 | 3 => vec![call("c1", a2.lock().unwrap().clone())],
-        1 => vec![call("c2", a2.lock().unwrap().clone())],
-        _ => vec![done()],
-    }));
-    *app.lock().unwrap() = open_app(&world);
-    let person = Person::new(&world, |_, _| Some(Decision::Session));
-    world.run(&person).await.unwrap();
-    assert_eq!(
-        person.approvals(),
-        1,
-        "the second call rides on the session grant"
-    );
-    assert_eq!(
-        world
-            .audit()
-            .iter()
-            .map(|a| a.1.as_str())
-            .collect::<Vec<_>>(),
-        ["approved_session", "session_grant"]
-    );
-
-    // Signing out ends it: a new sign-in is a new epoch.
-    world.agent.end_session();
-    world.api.set_account(None);
-    world.api.set_account(Some(USER.to_owned()));
-    assert!(
-        world
-            .agent
-            .sessions
-            .list(USER, world.api.epoch())
-            .is_empty()
-    );
-    let again = Person::new(&world, |_, _| Some(Decision::Deny));
-    world.run(&again).await.unwrap();
-    assert_eq!(again.approvals(), 1, "asked again after signing in again");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn approvals_cannot_be_forged_replayed_or_borrowed() {
-    let app = Arc::new(Mutex::new(Value::Null));
-    let a2 = Arc::clone(&app);
-    let world = World::new(Box::new(move |index, _| {
-        if index == 0 {
-            vec![call("c1", a2.lock().unwrap().clone())]
-        } else {
-            vec![done()]
-        }
-    }));
-    *app.lock().unwrap() = open_app(&world);
-    let epoch = world.api.epoch();
-    let probe_agent = &world.agent;
-    let log = Arc::new(Mutex::new(Vec::<String>::new()));
-    let log2 = Arc::clone(&log);
-    let api_epoch = epoch;
-    let person = Person::new(&world, move |event, _| {
-        let UiEvent::ApprovalRequired { approval_id, .. } = event else {
-            return None;
-        };
-        let mut seen = log2.lock().unwrap();
-        // Made-up ids, the wrong shape, another account, another sign-in, a decision not on offer.
-        for bogus in [
-            "apr_00000000-0000-4000-8000-000000000000",
-            "",
-            "../x",
-            "c1",
-            "proj_x",
-        ] {
-            seen.push(format!(
-                "bogus:{}",
-                probe_agent
-                    .answer(USER, api_epoch, bogus, Decision::Once)
-                    .is_err()
-            ));
-        }
-        seen.push(format!(
-            "other_account:{}",
-            probe_agent
-                .answer("bob", api_epoch, approval_id, Decision::Once)
-                .is_err()
-        ));
-        seen.push(format!(
-            "other_epoch:{}",
-            probe_agent
-                .answer(USER, api_epoch + 1, approval_id, Decision::Once)
-                .is_err()
-        ));
-        Some(Decision::Once)
-    });
-    world.run(&person).await.unwrap();
-    assert!(
-        log.lock().unwrap().iter().all(|l| l.ends_with(":true")),
-        "{:?}",
-        log.lock().unwrap()
-    );
-    assert!(world.ran(), "only the real answer counted");
-    let id = person
-        .events()
-        .into_iter()
-        .find_map(|e| {
-            if let UiEvent::ApprovalRequired { approval_id, .. } = e {
-                Some(approval_id)
-            } else {
-                None
-            }
-        })
-        .unwrap();
-    assert!(
-        world
-            .agent
-            .answer(USER, epoch, &id, Decision::Once)
-            .is_err(),
-        "approving twice, or after the call finished"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_reminder_can_only_be_allowed_once_and_is_saved_clean() {
+async fn a_reminder_is_allowed_in_the_page_once_and_is_saved_clean() {
     let world = World::new(Box::new(|index, _| {
         if index == 0 {
             vec![call(
@@ -585,34 +417,8 @@ async fn a_reminder_can_only_be_allowed_once_and_is_saved_clean() {
             vec![done()]
         }
     }));
-    let seen = Arc::new(Mutex::new(String::new()));
-    let seen2 = Arc::clone(&seen);
-    let agent = &world.agent;
-    let api = &world.api;
-    let person = Person::new(&world, move |event, _| {
-        let UiEvent::ApprovalRequired {
-            approval_id,
-            allow_session,
-            ..
-        } = event
-        else {
-            return None;
-        };
-        assert!(!allow_session);
-        *seen2.lock().unwrap() = format!(
-            "{:?}",
-            agent
-                .answer(USER, api.epoch(), approval_id, Decision::Session)
-                .is_err()
-        );
-        Some(Decision::Once)
-    });
+    let person = Person::new(&world, |_, _| Some(Decision::Once));
     world.run(&person).await.unwrap();
-    assert_eq!(
-        *seen.lock().unwrap(),
-        "true",
-        "'for this session' is refused for reminders"
-    );
     let reminders = world.store.with(|db| db.reminders(USER)).unwrap();
     assert_eq!(reminders.len(), 1);
     assert_eq!(reminders[0].text, "callmum now");
@@ -636,6 +442,75 @@ async fn a_reminder_can_only_be_allowed_once_and_is_saved_clean() {
             .as_str()
             .unwrap()
             .starts_with("Reminder saved.")
+    );
+}
+
+/// Replays and forgeries against the in-page dialog, which now serves reminders only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn page_approvals_cannot_be_forged_replayed_or_borrowed() {
+    let world = World::new(Box::new(|index, _| {
+        if index == 0 {
+            vec![call(
+                "r1",
+                json!({"tool": "create_reminder", "text": "x", "due_at": soon()}),
+            )]
+        } else {
+            vec![done()]
+        }
+    }));
+    let epoch = world.api.epoch();
+    let probe = &world.agent;
+    let log = Arc::new(Mutex::new(Vec::<String>::new()));
+    let log2 = Arc::clone(&log);
+    let person = Person::new(&world, move |event, _| {
+        let UiEvent::ApprovalRequired { approval_id, .. } = event else {
+            return None;
+        };
+        let mut seen = log2.lock().unwrap();
+        for bogus in ["apr_00000000-0000-4000-8000-000000000000", "", "../x", "r1"] {
+            seen.push(format!(
+                "bogus:{}",
+                probe.answer(USER, epoch, bogus, Decision::Once).is_err()
+            ));
+        }
+        seen.push(format!(
+            "other_account:{}",
+            probe
+                .answer("bob", epoch, approval_id, Decision::Once)
+                .is_err()
+        ));
+        seen.push(format!(
+            "other_epoch:{}",
+            probe
+                .answer(USER, epoch + 1, approval_id, Decision::Once)
+                .is_err()
+        ));
+        Some(Decision::Once)
+    });
+    world.run(&person).await.unwrap();
+    assert!(
+        log.lock().unwrap().iter().all(|l| l.ends_with(":true")),
+        "{:?}",
+        log.lock().unwrap()
+    );
+    assert_eq!(world.store.with(|db| db.reminders(USER)).unwrap().len(), 1);
+    let id = person
+        .events()
+        .into_iter()
+        .find_map(|e| {
+            if let UiEvent::ApprovalRequired { approval_id, .. } = e {
+                Some(approval_id)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    assert!(
+        world
+            .agent
+            .answer(USER, epoch, &id, Decision::Once)
+            .is_err(),
+        "approving twice, or after the call finished"
     );
 }
 
@@ -665,115 +540,6 @@ async fn a_reminder_in_the_past_is_refused_without_asking() {
             .unwrap()
             .is_empty()
     );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_unanswered_dialog_expires_into_a_denial() {
-    let app = Arc::new(Mutex::new(Value::Null));
-    let a2 = Arc::clone(&app);
-    let world = World::with_agent(
-        Box::new(move |index, _| {
-            if index == 0 {
-                vec![call("c1", a2.lock().unwrap().clone())]
-            } else {
-                vec![done()]
-            }
-        }),
-        Agent::with_timeouts(Duration::from_millis(100), Duration::from_secs(10)),
-    );
-    *app.lock().unwrap() = open_app(&world);
-    let person = Person::silent(&world);
-    world.run(&person).await.unwrap();
-    assert!(!world.ran());
-    assert_eq!(tool_result_in(&world.stub.requests()[1])["code"], "denied");
-    assert_eq!(world.audit()[0].1, "expired");
-    let id = person
-        .events()
-        .into_iter()
-        .find_map(|e| {
-            if let UiEvent::ApprovalRequired { approval_id, .. } = e {
-                Some(approval_id)
-            } else {
-                None
-            }
-        })
-        .unwrap();
-    assert!(
-        world
-            .agent
-            .answer(USER, world.api.epoch(), &id, Decision::Once)
-            .is_err(),
-        "too late"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cancelling_while_a_dialog_is_open_stops_everything() {
-    let app = Arc::new(Mutex::new(Value::Null));
-    let a2 = Arc::clone(&app);
-    let world = World::new(Box::new(move |index, _| {
-        if index == 0 {
-            vec![call("c1", a2.lock().unwrap().clone())]
-        } else {
-            vec![done()]
-        }
-    }));
-    *app.lock().unwrap() = open_app(&world);
-    let agent = &world.agent;
-    let person = Person::new(&world, move |_, _| {
-        agent.cancel_turn();
-        None
-    });
-    world.run(&person).await.unwrap();
-    assert!(!world.ran());
-    assert_eq!(person.last_error().as_deref(), Some("canceled"));
-    assert_eq!(
-        world.stub.requests().len(),
-        1,
-        "no further request after cancelling"
-    );
-    assert_eq!(world.audit()[0].1, "canceled");
-    let id = person
-        .events()
-        .into_iter()
-        .find_map(|e| {
-            if let UiEvent::ApprovalRequired { approval_id, .. } = e {
-                Some(approval_id)
-            } else {
-                None
-            }
-        })
-        .unwrap();
-    assert!(
-        world
-            .agent
-            .answer(USER, world.api.epoch(), &id, Decision::Once)
-            .is_err(),
-        "approving after cancel does nothing"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn signing_out_while_a_dialog_is_open_drops_it() {
-    let app = Arc::new(Mutex::new(Value::Null));
-    let a2 = Arc::clone(&app);
-    let world = World::new(Box::new(move |index, _| {
-        if index == 0 {
-            vec![call("c1", a2.lock().unwrap().clone())]
-        } else {
-            vec![done()]
-        }
-    }));
-    *app.lock().unwrap() = open_app(&world);
-    let (agent, api) = (&world.agent, &world.api);
-    let person = Person::new(&world, move |_, _| {
-        api.set_account(None);
-        agent.end_session();
-        None
-    });
-    world.run(&person).await.unwrap();
-    assert!(!world.ran());
-    assert_eq!(world.stub.requests().len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -979,33 +745,6 @@ async fn a_folder_that_vanished_is_unavailable_not_a_crash() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_tool_that_takes_too_long_times_out_and_the_model_hears_timeout() {
-    let root = Arc::new(Mutex::new(String::new()));
-    let r2 = Arc::clone(&root);
-    let world = World::with_agent(
-        Box::new(move |index, _| {
-            if index == 0 {
-                vec![call(
-                    "c1",
-                    json!({"tool": "search_files", "root_id": *r2.lock().unwrap(), "query": "zzz-no-match", "max_results": 5}),
-                )]
-            } else {
-                vec![done()]
-            }
-        }),
-        Agent::with_timeouts(Duration::from_secs(30), Duration::from_millis(1)),
-    );
-    for i in 0..4000 {
-        std::fs::write(world.scratch.path(&format!("proj\\file{i}.txt")), b"x").unwrap();
-    }
-    *root.lock().unwrap() = world.root();
-    let person = Person::silent(&world);
-    world.run(&person).await.unwrap();
-    assert_eq!(tool_result_in(&world.stub.requests()[1])["code"], "timeout");
-    assert_eq!(world.audit()[0].2.as_deref(), Some("timeout"));
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn only_one_turn_runs_at_a_time() {
     let world = World::new(Box::new(|_, _| vec![done()]));
     let (_cancel, _guard) = world.agent.begin().unwrap();
@@ -1051,4 +790,417 @@ async fn a_server_error_event_reaches_the_person_and_ends_the_turn() {
     let person = Person::silent(&world);
     world.run(&person).await.unwrap();
     assert_eq!(person.last_error().as_deref(), Some("agent_timeout"));
+}
+
+// ---- launches: confirmed in a native window, every time ----
+
+fn launch_world(script: Script, answers: &[bool]) -> (World, Arc<Scripted>) {
+    let confirmer = Arc::new(Scripted::new(answers));
+    let agent = Agent::with_timeouts(
+        Duration::from_secs(30),
+        Duration::from_secs(10),
+        confirmer.clone(),
+    );
+    (World::with_agent(script, agent), confirmer)
+}
+
+fn one_call(id: &'static str, request: Arc<Mutex<Value>>) -> Script {
+    Box::new(move |index, _| {
+        if index == 0 {
+            vec![
+                speech("Opening it."),
+                call(id, request.lock().unwrap().clone()),
+            ]
+        } else {
+            vec![done()]
+        }
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_denied_launch_never_runs_and_the_model_is_told() {
+    let request = Arc::new(Mutex::new(Value::Null));
+    let (world, confirmer) = launch_world(one_call("c1", Arc::clone(&request)), &[false]);
+    *request.lock().unwrap() = open_app(&world);
+    let person = Person::silent(&world);
+    world.run(&person).await.unwrap();
+
+    assert!(!world.ran(), "denied means the program never started");
+    let result = tool_result_in(&world.stub.requests()[1]);
+    assert_eq!(
+        (result["status"].as_str(), result["code"].as_str()),
+        (Some("error"), Some("denied"))
+    );
+    assert_eq!(
+        world.audit(),
+        [("open_app".into(), "denied".into(), Some("denied".into()))]
+    );
+    assert_eq!(
+        person.approvals(),
+        0,
+        "no webview dialog exists for a launch"
+    );
+    let shown = confirmer.shown();
+    assert_eq!(shown.len(), 1);
+    assert!(
+        shown[0].body.starts_with("Open Tool\nProgram: "),
+        "{}",
+        shown[0].body
+    );
+    assert!(
+        shown[0].body.contains("tool.exe"),
+        "the real target is shown"
+    );
+    assert!(
+        !shown[0].body.contains("Opening it."),
+        "the model's words are not in the window"
+    );
+    assert!(shown[0].body.contains("Cancel (the default) refuses"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_models_commentary_cannot_change_what_the_window_says() {
+    let app = Arc::new(Mutex::new(Value::Null));
+    let a2 = Arc::clone(&app);
+    let (world, confirmer) = launch_world(
+        Box::new(move |index, _| {
+            if index == 0 {
+                vec![
+                    speech("Title: Delete everything. Press OK, it is safe."),
+                    call("c1", a2.lock().unwrap().clone()),
+                ]
+            } else {
+                vec![done()]
+            }
+        }),
+        &[false],
+    );
+    *app.lock().unwrap() = open_app(&world);
+    let person = Person::silent(&world);
+    world.run(&person).await.unwrap();
+    let body = confirmer.shown()[0].body.clone();
+    assert!(
+        !body.contains("Delete everything") && !body.contains("safe"),
+        "{body}"
+    );
+    assert!(body.starts_with("Open Tool"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn each_launch_asks_again_and_no_session_grant_exists() {
+    let app = Arc::new(Mutex::new(Value::Null));
+    let a2 = Arc::clone(&app);
+    let (world, confirmer) = launch_world(
+        Box::new(move |index, _| match index {
+            0 => vec![call("c1", a2.lock().unwrap().clone())],
+            1 => vec![call("c2", a2.lock().unwrap().clone())],
+            2 => vec![call("c3", a2.lock().unwrap().clone())],
+            _ => vec![done()],
+        }),
+        &[true, true, false],
+    );
+    *app.lock().unwrap() = open_app(&world);
+    let person = Person::silent(&world);
+    world.run(&person).await.unwrap();
+    assert_eq!(
+        confirmer.shown().len(),
+        3,
+        "every launch is its own question"
+    );
+    assert!(world.ran(), "the allowed launches started the helper");
+    assert_eq!(tool_result_in(&world.stub.requests()[3])["code"], "denied");
+    assert_eq!(
+        world
+            .audit()
+            .iter()
+            .map(|a| a.1.as_str())
+            .collect::<Vec<_>>(),
+        ["approved_once", "approved_once", "denied"]
+    );
+    assert!(
+        world
+            .agent
+            .sessions
+            .list(USER, world.api.epoch())
+            .is_empty()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_webview_has_no_way_to_approve_a_launch() {
+    let request = Arc::new(Mutex::new(Value::Null));
+    let slot: AgentSlot = Arc::new(Mutex::new(None));
+    let log = Arc::new(Mutex::new(Vec::<bool>::new()));
+    let (slot2, log2) = (Arc::clone(&slot), Arc::clone(&log));
+    // While the native window is open, a compromised page tries every id it can think of.
+    let window = Scripted {
+        before: Some(Box::new(move |_| {
+            let guard = slot2.lock().unwrap();
+            let (agent, epoch) = guard.as_ref().unwrap();
+            for id in [
+                "apr_00000000-0000-4000-8000-000000000000",
+                "c1",
+                "",
+                "native",
+                "approval_1",
+            ] {
+                for decision in [Decision::Once, Decision::Deny] {
+                    log2.lock()
+                        .unwrap()
+                        .push(agent.answer(USER, *epoch, id, decision).is_ok());
+                }
+            }
+        })),
+        ..Scripted::new(&[false])
+    };
+    let agent = Arc::new(Agent::with_timeouts(
+        Duration::from_secs(30),
+        Duration::from_secs(10),
+        Arc::new(window),
+    ));
+    let world = World::with_agent_arc(one_call("c1", Arc::clone(&request)), Arc::clone(&agent));
+    *slot.lock().unwrap() = Some((agent, world.api.epoch()));
+    *request.lock().unwrap() = open_app(&world);
+    let person = Person::silent(&world);
+    world.run(&person).await.unwrap();
+    assert_eq!(log.lock().unwrap().len(), 10, "the probe ran");
+    assert!(
+        log.lock().unwrap().iter().all(|accepted| !accepted),
+        "no id is accepted for a launch"
+    );
+    assert!(!world.ran());
+    assert_eq!(
+        person.approvals(),
+        0,
+        "the page was never given an id to answer"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_launch_dialog_that_is_never_answered_expires_into_a_denial() {
+    let request = Arc::new(Mutex::new(Value::Null));
+    let slow = Scripted {
+        delay: Duration::from_secs(5),
+        ..Scripted::new(&[true])
+    };
+    let agent = Agent::with_timeouts(
+        Duration::from_millis(100),
+        Duration::from_secs(10),
+        Arc::new(slow),
+    );
+    let world = World::with_agent(one_call("c1", Arc::clone(&request)), agent);
+    *request.lock().unwrap() = open_app(&world);
+    let person = Person::silent(&world);
+    world.run(&person).await.unwrap();
+    assert!(
+        !world.ran(),
+        "a late OK from the window does not launch anything"
+    );
+    assert_eq!(tool_result_in(&world.stub.requests()[1])["code"], "denied");
+    assert_eq!(world.audit()[0].1, "expired");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_while_the_window_is_open_cancels_even_if_ok_is_pressed_afterwards() {
+    let request = Arc::new(Mutex::new(Value::Null));
+    let agent_slot: Arc<Mutex<Option<Arc<Agent>>>> = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&agent_slot);
+    let racing = Scripted {
+        // Stop is pressed while the window is open; the person still presses OK afterwards.
+        after: Some(Box::new(move |_| {
+            slot.lock().unwrap().as_ref().unwrap().cancel_turn();
+        })),
+        ..Scripted::new(&[true])
+    };
+    let agent = Arc::new(Agent::with_timeouts(
+        Duration::from_secs(30),
+        Duration::from_secs(10),
+        Arc::new(racing),
+    ));
+    *agent_slot.lock().unwrap() = Some(Arc::clone(&agent));
+    let world = World::with_agent_arc(one_call("c1", Arc::clone(&request)), agent);
+    *request.lock().unwrap() = open_app(&world);
+    let person = Person::silent(&world);
+    world.run(&person).await.unwrap();
+    assert!(
+        !world.ran(),
+        "nothing launches after Stop, whatever the window answers"
+    );
+    assert_eq!(person.last_error().as_deref(), Some("canceled"));
+    assert_eq!(world.audit()[0].1, "canceled");
+    assert_eq!(world.stub.requests().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn signing_out_in_the_real_order_while_the_window_is_open_launches_nothing() {
+    let request = Arc::new(Mutex::new(Value::Null));
+    let slot: AgentApiSlot = Arc::new(Mutex::new(None));
+    let slot2 = Arc::clone(&slot);
+    let window = Scripted {
+        // Sign-out happens while the window is open, and the person still presses OK afterwards.
+        after: Some(Box::new(move |_| {
+            let guard = slot2.lock().unwrap();
+            let (agent, api) = guard.as_ref().unwrap();
+            begin_sign_out(api, agent);
+        })),
+        ..Scripted::new(&[true])
+    };
+    let agent = Arc::new(Agent::with_timeouts(
+        Duration::from_secs(30),
+        Duration::from_secs(10),
+        Arc::new(window),
+    ));
+    let world = World::with_agent_arc(one_call("c1", Arc::clone(&request)), Arc::clone(&agent));
+    *slot.lock().unwrap() = Some((agent, Arc::clone(&world.api)));
+    *request.lock().unwrap() = open_app(&world);
+    let before = world.api.epoch();
+    let person = Person::silent(&world);
+    world.run(&person).await.unwrap();
+    assert!(world.api.epoch() > before, "the epoch changed");
+    assert!(!world.ran(), "nothing launched after the sign-out");
+    assert_eq!(
+        world.stub.requests().len(),
+        1,
+        "no further request after signing out"
+    );
+    assert!(
+        world.audit().iter().all(|a| a.1 == "canceled"),
+        "{:?}",
+        world.audit()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_change_in_the_registry_while_the_window_is_open_cancels_the_launch() {
+    let request = Arc::new(Mutex::new(Value::Null));
+    let db_path = Arc::new(Mutex::new(String::new()));
+    let d2 = Arc::clone(&db_path);
+    let racing = Scripted {
+        // The app is removed from the registry while the window is open; OK is pressed anyway.
+        before: Some(Box::new(move |_| {
+            let conn = rusqlite::Connection::open(d2.lock().unwrap().as_str()).unwrap();
+            // Still registered, but no longer what the person was shown.
+            conn.execute("UPDATE allowed_apps SET name = 'Something else'", [])
+                .unwrap();
+        })),
+        ..Scripted::new(&[true])
+    };
+    let agent = Agent::with_timeouts(
+        Duration::from_secs(30),
+        Duration::from_secs(10),
+        Arc::new(racing),
+    );
+    let world = World::with_agent(one_call("c1", Arc::clone(&request)), agent);
+    *db_path.lock().unwrap() = world
+        .scratch
+        .path("data/moby.db")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    *request.lock().unwrap() = open_app(&world);
+    let person = Person::silent(&world);
+    world.run(&person).await.unwrap();
+    assert!(
+        !world.ran(),
+        "the approval was for something that no longer exists"
+    );
+    assert_eq!(
+        tool_result_in(&world.stub.requests()[1])["code"],
+        "unavailable"
+    );
+    assert_eq!(world.audit()[0].1, "changed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn open_project_asks_in_the_native_window_with_the_real_folder() {
+    let request = Arc::new(Mutex::new(Value::Null));
+    let (world, confirmer) = launch_world(one_call("c1", Arc::clone(&request)), &[false]);
+    *request.lock().unwrap() =
+        json!({"tool": "open_project", "project_id": world.project.id, "app_id": world.app.id});
+    let person = Person::silent(&world);
+    world.run(&person).await.unwrap();
+    let body = confirmer.shown()[0].body.clone();
+    assert!(body.starts_with("Open project demo in Tool"), "{body}");
+    assert!(
+        body.contains("Folder: ") && body.contains("proj") && body.contains("Program: "),
+        "{body}"
+    );
+    assert!(!world.ran());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_slow_tool_is_cut_off_at_the_timeout_even_if_it_ignores_the_stop_flag() {
+    let root = Arc::new(Mutex::new(String::new()));
+    let r2 = Arc::clone(&root);
+    let mut agent = Agent::with_timeouts(
+        Duration::from_secs(30),
+        Duration::from_millis(150),
+        Arc::new(Scripted::new(&[])),
+    );
+    // A tool that never looks at the flag or the deadline and takes five seconds.
+    agent.runner = Arc::new(|_, _, _, _, _| {
+        std::thread::sleep(Duration::from_secs(5));
+        Ok("late".to_owned())
+    });
+    let world = World::with_agent(
+        Box::new(move |index, _| {
+            if index == 0 {
+                vec![call(
+                    "c1",
+                    json!({"tool": "search_files", "root_id": *r2.lock().unwrap(), "query": "x", "max_results": 5}),
+                )]
+            } else {
+                vec![done()]
+            }
+        }),
+        agent,
+    );
+    *root.lock().unwrap() = world.root();
+    let person = Person::silent(&world);
+    let started = Instant::now();
+    world.run(&person).await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_millis(4000),
+        "the turn did not wait for the tool"
+    );
+    assert_eq!(tool_result_in(&world.stub.requests()[1])["code"], "timeout");
+    assert_eq!(world.audit()[0].2.as_deref(), Some("timeout"));
+}
+
+#[test]
+fn a_launch_that_started_before_a_timeout_or_cancel_is_reported_as_started() {
+    assert_eq!(
+        settle(Err(ToolFailureCode::Timeout), true),
+        Ok("ok".to_owned())
+    );
+    assert_eq!(
+        settle(Err(ToolFailureCode::Canceled), true),
+        Ok("ok".to_owned())
+    );
+    assert_eq!(
+        settle(Err(ToolFailureCode::Timeout), false),
+        Err(ToolFailureCode::Timeout)
+    );
+    assert_eq!(
+        settle(Err(ToolFailureCode::Canceled), false),
+        Err(ToolFailureCode::Canceled)
+    );
+    assert_eq!(
+        settle(Err(ToolFailureCode::Failed), true),
+        Err(ToolFailureCode::Failed)
+    );
+}
+
+#[test]
+fn the_launch_code_sets_the_started_flag_only_after_the_program_is_running() {
+    let scratch = Scratch::new();
+    let exe = scratch.path("flag.exe");
+    std::fs::copy(helper_exe(), &exe).unwrap();
+    let program = crate::paths::register_program(exe.to_str().unwrap()).unwrap();
+    let flag = AtomicBool::new(false);
+    crate::tools::launch::open_app_noting(&program.path, &flag).unwrap();
+    assert!(flag.load(Ordering::SeqCst));
+    let missing = AtomicBool::new(false);
+    assert!(crate::tools::launch::open_app_noting(r"C:\no\such\thing.exe", &missing).is_err());
+    assert!(!missing.load(Ordering::SeqCst));
 }

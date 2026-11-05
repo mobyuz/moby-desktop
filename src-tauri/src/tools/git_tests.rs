@@ -39,9 +39,13 @@ fn repo(scratch: &Scratch, name: &str) -> std::path::PathBuf {
     dir
 }
 
+fn far() -> Instant {
+    Instant::now() + std::time::Duration::from_secs(60)
+}
+
 fn run(dir: &Path) -> Result<Summary, ToolFailureCode> {
     let verified = paths::register_dir(dir.to_str().unwrap()).unwrap();
-    status(&verified, &Arc::new(AtomicBool::new(false)))
+    status(&verified, &Arc::new(AtomicBool::new(false)), far())
 }
 
 #[test]
@@ -206,7 +210,7 @@ fn cancellation_is_reported() {
     let verified = paths::register_dir(dir.to_str().unwrap()).unwrap();
     let flag = Arc::new(AtomicBool::new(true));
     assert_eq!(
-        status(&verified, &flag).unwrap_err(),
+        status(&verified, &flag, far()).unwrap_err(),
         ToolFailureCode::Canceled
     );
 }
@@ -302,4 +306,215 @@ fn the_same_repository_does_start_the_filter_with_gix_default_options() {
         marker.exists(),
         "control failed: default gix did not run the filter, so the test above proves nothing"
     );
+}
+
+fn sha_of_head(dir: &Path) -> String {
+    let out = Command::new("git")
+        .current_dir(dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+fn bare_shell(scratch: &Scratch, name: &str) -> std::path::PathBuf {
+    let dir = scratch.dir(name);
+    git(&dir, &["init", "-q", "-b", "main"]);
+    dir
+}
+
+#[test]
+fn a_commondir_file_is_refused_and_gix_would_follow_it() {
+    let scratch = Scratch::new();
+    let other = repo(&scratch, "other");
+    let dir = bare_shell(&scratch, "shell");
+    std::fs::write(
+        dir.join(".git").join("commondir"),
+        format!("{}\n", other.join(".git").display()),
+    )
+    .unwrap();
+    // Control: opened without our guard, gix really does use the other folder.
+    let opened = gix::open_opts(&dir, safe_open_options()).unwrap();
+    assert!(
+        !same_place(opened.common_dir(), opened.git_dir()),
+        "control failed: gix did not follow commondir"
+    );
+    assert_eq!(run(&dir).unwrap_err(), ToolFailureCode::Unavailable);
+}
+
+#[test]
+fn an_alternates_file_is_refused_and_gix_would_follow_it() {
+    let scratch = Scratch::new();
+    let other = repo(&scratch, "other");
+    let dir = bare_shell(&scratch, "shell");
+    let sha = sha_of_head(&other);
+    std::fs::write(
+        dir.join(".git").join("refs").join("heads").join("main"),
+        format!("{sha}\n"),
+    )
+    .unwrap();
+    let info = dir.join(".git").join("objects").join("info");
+    std::fs::create_dir_all(&info).unwrap();
+    std::fs::write(
+        info.join("alternates"),
+        format!("{}\n", other.join(".git").join("objects").display()),
+    )
+    .unwrap();
+    // Control: the commit exists only in the other folder, and gix finds it there.
+    let opened = gix::open_opts(&dir, safe_open_options()).unwrap();
+    assert!(
+        opened.head_commit().is_ok(),
+        "control failed: gix did not read objects through alternates"
+    );
+    assert_eq!(run(&dir).unwrap_err(), ToolFailureCode::Unavailable);
+
+    // A network share named there is refused the same way, without being touched.
+    std::fs::write(
+        info.join("alternates"),
+        "\\\\127.0.0.1\\no-such-share\\objects\n",
+    )
+    .unwrap();
+    assert_eq!(run(&dir).unwrap_err(), ToolFailureCode::Unavailable);
+}
+
+#[test]
+fn a_gitdir_file_and_links_inside_dot_git_are_refused() {
+    let scratch = Scratch::new();
+    let dir = repo(&scratch, "r");
+    std::fs::write(dir.join(".git").join("gitdir"), "C:\\somewhere\n").unwrap();
+    assert_eq!(run(&dir).unwrap_err(), ToolFailureCode::Unavailable);
+    std::fs::remove_file(dir.join(".git").join("gitdir")).unwrap();
+    assert!(run(&dir).is_ok());
+
+    let elsewhere = scratch.dir("elsewhere");
+    for name in ["refs", "objects"] {
+        let real = dir.join(".git").join(name);
+        let moved = dir.join(".git").join(format!("{name}-real"));
+        std::fs::rename(&real, &moved).unwrap();
+        crate::paths::testing::junction(&real, &elsewhere);
+        assert_eq!(
+            run(&dir).unwrap_err(),
+            ToolFailureCode::Unavailable,
+            "{name}"
+        );
+        crate::paths::testing::remove_junction(&real);
+        std::fs::rename(&moved, &real).unwrap();
+    }
+    assert!(run(&dir).is_ok());
+}
+
+fn lists(repo: &gix::Repository, name: &str) -> bool {
+    repo.status(gix::progress::Discard)
+        .unwrap()
+        .into_iter(std::iter::empty::<gix::bstr::BString>())
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|item| item.location() == name)
+}
+
+fn permissive(dir: &Path) -> gix::Repository {
+    gix::open_opts(
+        dir,
+        gix::open::Options::default().permissions(gix::open::Permissions::all()),
+    )
+    .unwrap()
+}
+
+fn append_config(dir: &Path, text: &str) {
+    let config = dir.join(".git").join("config");
+    let mut current = std::fs::read_to_string(&config).unwrap();
+    current.push_str(text);
+    std::fs::write(&config, current).unwrap();
+}
+
+#[test]
+fn an_include_path_named_by_the_repository_is_not_followed() {
+    let scratch = Scratch::new();
+    let dir = repo(&scratch, "r");
+    let extra = scratch.file(
+        "extra.cfg",
+        b"[status]
+	showUntrackedFiles = no
+",
+    );
+    std::fs::write(dir.join("new.txt"), "n").unwrap();
+    append_config(
+        &dir,
+        &format!(
+            "[include]
+	path = {}
+",
+            extra.to_str().unwrap().replace('\\', "/")
+        ),
+    );
+    // Control: with gix's permissive defaults the included file changes the answer.
+    assert!(
+        !lists(&permissive(&dir), "new.txt"),
+        "control failed: include.path was not followed"
+    );
+    let summary = run(&dir).unwrap();
+    assert!(
+        summary.names.iter().any(|(_, n)| n == "new.txt"),
+        "{summary:?}"
+    );
+}
+
+#[test]
+fn core_excludes_file_named_by_the_repository_is_not_read() {
+    let scratch = Scratch::new();
+    let dir = repo(&scratch, "r");
+    let excludes = scratch.file(
+        "excludes",
+        b"new.txt
+",
+    );
+    std::fs::write(dir.join("new.txt"), "n").unwrap();
+    append_config(
+        &dir,
+        &format!(
+            "[core]
+	excludesFile = {}
+",
+            excludes.to_str().unwrap().replace('\\', "/")
+        ),
+    );
+    assert!(
+        !lists(&permissive(&dir), "new.txt"),
+        "control failed: core.excludesFile was not honoured"
+    );
+    let summary = run(&dir).unwrap();
+    assert!(
+        summary.names.iter().any(|(_, n)| n == "new.txt"),
+        "{summary:?}"
+    );
+}
+
+fn tracked(scratch: &Scratch) -> std::path::PathBuf {
+    let origin = scratch.dir("origin.git");
+    git(&origin, &["init", "-q", "--bare", "-b", "main"]);
+    let one = repo(scratch, "one");
+    git(&one, &["remote", "add", "origin", origin.to_str().unwrap()]);
+    git(&one, &["push", "-q", "-u", "origin", "main"]);
+    std::fs::write(one.join("o.txt"), "o").unwrap();
+    git(&one, &["add", "."]);
+    git(&one, &["commit", "-q", "-m", "ours"]);
+    one
+}
+
+#[test]
+fn git_gives_up_at_the_deadline_and_when_the_history_walk_is_too_long() {
+    let scratch = Scratch::new();
+    let dir = tracked(&scratch);
+    let verified = paths::register_dir(dir.to_str().unwrap()).unwrap();
+    let flag = Arc::new(AtomicBool::new(false));
+    assert_eq!(
+        status(&verified, &flag, Instant::now()).unwrap_err(),
+        ToolFailureCode::Timeout
+    );
+    assert_eq!(
+        status_with(&verified, &flag, far(), 0).unwrap_err(),
+        ToolFailureCode::PartialResult,
+        "a walk past the bound makes the whole answer partial"
+    );
+    assert!(status_with(&verified, &flag, far(), 10).is_ok());
 }

@@ -38,6 +38,8 @@ pub enum PathError {
     /// A link or junction.
     Reparse,
     NotProgram,
+    /// A shell, script host or launcher by name. See [`is_launcher_name`].
+    Launcher,
     Io,
 }
 
@@ -209,6 +211,59 @@ pub fn verify_dir(stored: &str) -> Result<VerifiedDir, PathError> {
     Ok(VerifiedDir { path: canonical })
 }
 
+/// Programs that run whatever they are given: shells, script hosts, interpreters, launchers.
+/// Matched on the canonical file name, so a link named something harmless that leads to one is
+/// caught. This is defence in depth for `open_project`, which passes a folder as the one argument,
+/// and not a boundary: a renamed copy of one of these passes.
+const LAUNCHERS: &[&str] = &[
+    "cmd",
+    "powershell",
+    "powershell_ise",
+    "pwsh",
+    "wscript",
+    "cscript",
+    "mshta",
+    "rundll32",
+    "regsvr32",
+    "bash",
+    "sh",
+    "wsl",
+    "wslhost",
+    "python",
+    "python3",
+    "pythonw",
+    "py",
+    "pyw",
+    "node",
+    "conhost",
+    "wt",
+    "windowsterminal",
+    "openconsole",
+    "msiexec",
+    "msbuild",
+    "certutil",
+    "bitsadmin",
+    "curl",
+    "ssh",
+    "wmic",
+    "forfiles",
+    "pcalua",
+    "schtasks",
+    "reg",
+    "java",
+    "javaw",
+    "ruby",
+    "perl",
+    "deno",
+    "bun",
+];
+
+pub fn is_launcher_name(path: &str) -> bool {
+    let name = path.rsplit('\\').next().unwrap_or("").to_lowercase();
+    let stem = name.strip_suffix(".exe").unwrap_or(&name);
+    LAUNCHERS.contains(&stem)
+}
+
 fn has_exe_extension(path: &str) -> bool {
     let name = path.rsplit('\\').next().unwrap_or("");
     name.len() > 4
@@ -231,6 +286,9 @@ pub fn verify_program(stored: &str) -> Result<VerifiedProgram, PathError> {
     // The canonical name decides, not the one we were given: a link named x.exe may lead to x.bat.
     if !has_exe_extension(&canonical) {
         return Err(PathError::NotProgram);
+    }
+    if is_launcher_name(&canonical) {
+        return Err(PathError::Launcher);
     }
     let meta = fs::symlink_metadata(&canonical).map_err(|_| PathError::Missing)?;
     if is_reparse(&meta) {
@@ -282,6 +340,7 @@ pub fn explain(error: PathError) -> &'static str {
         PathError::Changed => "it now points somewhere else",
         PathError::Reparse => "it is a link or junction",
         PathError::NotProgram => "only .exe programs can be added",
+        PathError::Launcher => "shells, script hosts and launchers can't be added",
         PathError::Io => "Windows would not open it",
     }
 }
@@ -712,5 +771,41 @@ mod tests {
         );
         drop(lock);
         assert!(std::fs::remove_file(&exe).is_ok());
+    }
+
+    #[test]
+    fn shells_script_hosts_and_launchers_cannot_be_registered_or_launched() {
+        let scratch = Scratch::new();
+        for name in [
+            "cmd.exe",
+            "CMD.EXE",
+            "powershell.exe",
+            "pwsh.exe",
+            "wscript.exe",
+            "cscript.exe",
+            "mshta.exe",
+            "rundll32.exe",
+            "regsvr32.exe",
+            "bash.exe",
+            "wsl.exe",
+            "python.exe",
+            "node.exe",
+            "conhost.exe",
+            "wt.exe",
+        ] {
+            let path = scratch.file(&format!("bin\\{name}"), &fake_pe());
+            assert_eq!(
+                register_program(path.to_str().unwrap()),
+                Err(PathError::Launcher),
+                "{name}"
+            );
+            assert_eq!(
+                verify_program(path.to_str().unwrap()),
+                Err(PathError::Launcher),
+                "{name} at launch time"
+            );
+        }
+        let fine = scratch.file("bin\\editor.exe", &fake_pe());
+        assert!(register_program(fine.to_str().unwrap()).is_ok());
     }
 }
