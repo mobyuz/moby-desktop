@@ -15,8 +15,33 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.7.4", features = [] }
 
 [dependencies]
+futures-util = { version = "0.3.34", default-features = false }
+# Same release the uuid crate already uses. The pairing key comes from the operating system's random generator (BCryptGenRandom on Windows).
+getrandom = "=0.4.3"
+# In-process git status for git_status. Pinned exactly and with only the status features: see docs/adr/0004-git-status.md.
+gix = { version = "=0.90.0", default-features = false, features = ["status", "revision", "sha1"] }
+keyring = "4.2.0"
+# Temporary sibling checkout, as in docs/adr/0001-desktop-foundation.md. Becomes a git tag after the first protocol release.
+moby-protocol = { path = "../../moby-protocol" }
+reqwest = { version = "0.13.5", default-features = false, features = ["native-tls", "json", "stream"] }
+# Playback of the spoken answer on this computer's speakers, and (development builds only) the PC microphone. Exact pin, no decoders: the answer arrives as raw PCM. Recording is a feature of the crate; the code that uses it is compiled out of release builds. See docs/adr/0007-voice-chain.md.
+rodio = { version = "=0.23.0", default-features = false, features = ["playback", "recording"] }
+# Native file dialogs, opened from Rust only. The webview gets no dialog or filesystem plugin.
+rfd = { version = "0.17.2", default-features = false }
+# Pinned exactly: the bundled SQLite is part of the local-data trust base (see docs/adr/0003-local-store.md).
+rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled"] }
+# USB serial ports: listing with their USB IDs, and the link to the robot. Pinned exactly (MPL-2.0, file-level copyleft) and without libudev, which is Linux only. See docs/adr/0006-robot-link.md.
+serialport = { version = "=4.10.1", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 tauri = { version = "2.12.5", features = [] }
+tauri-plugin-notification = "2.8.0"
 tauri-plugin-single-instance = "2"
+time = { version = "0.3.55", default-features = false, features = ["std", "parsing", "local-offset"] }
+tokio = { version = "1", default-features = false, features = ["time", "sync", "macros", "rt"] }
+# MessageBoxW and its window lookup, for the native confirmation (src/native.rs).
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+uuid = { version = "1.29.0", default-features = false, features = ["v4"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

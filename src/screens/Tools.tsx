@@ -1,90 +1,207 @@
-import { useState, type FormEvent } from "react";
-import { useApp } from "../store";
-import type { ToolName } from "../types";
+import { useCallback, useEffect, useState } from "react";
+import { api, asFailure } from "../api";
+import { formatWhen } from "../history";
+import { accessFor, READ_TOOLS, reminderState } from "../tools";
+import type { Registry, Reminder } from "../types";
 
-const TOOL_INFO: Record<ToolName, { label: string; detail: string }> = {
-  git_status: { label: "Git status", detail: "Read-only. Only registered projects." },
-  open_app: { label: "Open an app", detail: "Only apps on your allow-list." },
-  open_project: { label: "Open a project", detail: "Opens a registered project in your editor." },
-  search_files: { label: "Search files", detail: "Read-only, inside approved folders, bounded query." },
-  create_reminder: { label: "Create a reminder", detail: "Saves a short local reminder after you approve it." },
-};
+const EMPTY: Registry = { projects: [], apps: [], grants: [], session_grants: [] };
 
-const APPS = ["Visual Studio Code", "Windows Terminal", "File Explorer"];
-
+/** Folders and programs Moby may use, what it may do with them, and its reminders. */
 export function Tools() {
-  const app = useApp();
-  const [name, setName] = useState("");
-  const [path, setPath] = useState("");
+  const [registry, setRegistry] = useState<Registry>(EMPTY);
+  const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
 
-  const add = (event: FormEvent) => {
-    event.preventDefault();
-    if (name.trim() === "" || path.trim() === "") return;
-    app.addProject(name.trim(), path.trim());
-    setName("");
-    setPath("");
+  const reload = useCallback(async () => {
+    const [next, list] = await Promise.all([api.listRegistry(), api.listReminders()]);
+    setRegistry(next);
+    setReminders(list);
+  }, []);
+
+  useEffect(() => {
+    reload().catch((failure: unknown) => setError(asFailure(failure).message));
+  }, [reload]);
+
+  const attempt = (action: Promise<unknown>, done?: string) => {
+    setError(null);
+    setNotice(null);
+    action
+      .then(reload)
+      .then(() => done && setNotice(done))
+      .catch((failure: unknown) => setError(asFailure(failure).message));
+  };
+
+  const add = (pick: () => Promise<unknown>) => {
+    setError(null);
+    setNotice(null);
+    pick()
+      .then(async (added) => {
+        await reload();
+        if (added) setNotice("Added.");
+      })
+      .catch((failure: unknown) => setError(asFailure(failure).message));
   };
 
   return (
-    <div className="stack">
-      <section className="card">
-        <h2>Tools Moby may ask to use</h2>
-        <p className="hint">Moby can only ask. Nothing runs until you approve it, and turned-off tools are refused automatically.</p>
-        <ul className="list">
-          {(Object.keys(TOOL_INFO) as ToolName[]).map((tool) => (
-            <li key={tool} className="row between">
-              <span>
-                <strong>{TOOL_INFO[tool].label}</strong>
-                <span className="muted block">{TOOL_INFO[tool].detail}</span>
-              </span>
-              <label className="switch">
-                <input type="checkbox" role="switch" checked={app.tools[tool]} onChange={() => app.toggleTool(tool)} aria-label={`${TOOL_INFO[tool].label} enabled`} />
-                <span>{app.tools[tool] ? "On" : "Off"}</span>
-              </label>
-            </li>
-          ))}
-        </ul>
-      </section>
+    <main className="page">
+      <div className="page-column">
+        <section>
+          <h2>Tools and projects</h2>
+          <p>
+            Moby can only use the folders and programs you add here. It sees their names, never their locations, and it can never run anything you did not add. Opening a program or a project always asks you first,
+            every time, in a separate Windows window that Moby&rsquo;s page cannot click for you.
+          </p>
+          {notice && (
+            <p className="ok" role="status">
+              {notice}
+            </p>
+          )}
+          {error && (
+            <p className="error" role="alert">
+              {error}
+            </p>
+          )}
+        </section>
 
-      <section className="card">
-        <h2>Registered projects</h2>
-        <ul className="list">
-          {app.projects.map((project) => (
-            <li key={project.id} className="row between">
-              <span>
-                <strong>{project.name}</strong>
-                <span className="muted block">{project.path}</span>
-              </span>
-              <button className="secondary small" type="button" onClick={() => app.removeProject(project.id)}>
-                Remove
-              </button>
-            </li>
-          ))}
-          {app.projects.length === 0 && <li className="muted">No projects registered.</li>}
-        </ul>
-        <form className="row" onSubmit={add}>
-          <label className="grow">
-            Name
-            <input value={name} onChange={(e) => setName(e.target.value)} />
-          </label>
-          <label className="grow">
-            Folder
-            <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="D:\repos\my-project" />
-          </label>
-          <button className="primary" type="submit">
-            Add
-          </button>
-        </form>
-      </section>
+        <section>
+          <div className="row between">
+            <h2>Projects</h2>
+            <button className="primary small" type="button" onClick={() => add(api.addProject)}>
+              Add project folder
+            </button>
+          </div>
+          <p className="notice">
+            Adding a folder lets Moby read its <strong>file names</strong> and <strong>Git status</strong>, without asking each time. It cannot read what is inside your files. You can turn either off below, or remove the
+            folder, whenever you like.
+          </p>
+          {registry.projects.length === 0 ? (
+            <p className="muted">No projects yet. Adding a folder lets Moby read its Git status and search its file names.</p>
+          ) : (
+            <ul className="list">
+              {registry.projects.map((project) => (
+                <li key={project.id}>
+                  <div className="row between">
+                    <div className="grow">
+                      <strong>{project.name}</strong>
+                      <div className="hint path">{project.short_path}</div>
+                    </div>
+                    {removing === project.id ? (
+                      <div className="row">
+                        <button
+                          className="danger small"
+                          type="button"
+                          onClick={() => {
+                            setRemoving(null);
+                            attempt(api.removeProject(project.id), "Removed, with its permissions.");
+                          }}
+                        >
+                          Remove
+                        </button>
+                        <button className="secondary small" type="button" onClick={() => setRemoving(null)}>
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button className="secondary small" type="button" aria-label={`Remove ${project.name}`} onClick={() => setRemoving(project.id)}>
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                  <ul className="grants">
+                    {READ_TOOLS.map(({ tool, label }) => {
+                      const access = accessFor(registry, tool, project.id);
+                      return (
+                        <li key={tool} className="row between">
+                          <span>
+                            {label}
+                            <span className="tag">{access.kind === "always" ? "Allowed" : access.kind === "session" ? "Allowed this session" : "Not allowed"}</span>
+                          </span>
+                          <span className="row">
+                            {access.kind === "always" && (
+                              <button className="secondary small" type="button" aria-label={`Revoke ${label} for ${project.name}`} onClick={() => attempt(api.revokeGrant(access.grant.id), "Permission revoked.")}>
+                                Revoke
+                              </button>
+                            )}
+                            {access.kind === "session" && (
+                              <button className="secondary small" type="button" aria-label={`Revoke ${label} for ${project.name}`} onClick={() => attempt(api.revokeSessionGrant(tool, access.grant.key), "Permission revoked.")}>
+                                Revoke
+                              </button>
+                            )}
+                            {access.kind !== "always" && (
+                              <button className="secondary small" type="button" aria-label={`Always allow ${label} for ${project.name}`} onClick={() => attempt(api.grantRead(project.id, tool, false))}>
+                                Allow always
+                              </button>
+                            )}
+                            {access.kind === "none" && (
+                              <button className="secondary small" type="button" aria-label={`Allow ${label} for ${project.name} this session`} onClick={() => attempt(api.grantRead(project.id, tool, true))}>
+                                Allow this session
+                              </button>
+                            )}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
 
-      <section className="card">
-        <h2>Allowed apps</h2>
-        <ul className="chips-static">
-          {APPS.map((item) => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
-      </section>
-    </div>
+        <section>
+          <div className="row between">
+            <h2>Programs</h2>
+            <button className="primary small" type="button" onClick={() => add(api.addApp)}>
+              Add program
+            </button>
+          </div>
+          {registry.apps.length === 0 ? (
+            <p className="muted">No programs yet. Only .exe programs can be added, and Moby asks every time before opening one.</p>
+          ) : (
+            <ul className="list">
+              {registry.apps.map((program) => (
+                <li key={program.id} className="row between">
+                  <div className="grow">
+                    <strong>{program.name}</strong>
+                    <div className="hint path">{program.short_path}</div>
+                  </div>
+                  <button className="secondary small" type="button" aria-label={`Remove ${program.name}`} onClick={() => attempt(api.removeApp(program.id), "Removed.")}>
+                    Remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section>
+          <h2>Reminders</h2>
+          {reminders.length === 0 ? (
+            <p className="muted">No reminders. Ask Moby to remind you of something and confirm it.</p>
+          ) : (
+            <ul className="list">
+              {reminders.map((reminder) => (
+                <li key={reminder.id} className="row between">
+                  <div className="grow">
+                    <span>{reminder.text}</span>
+                    <div className="hint">
+                      {formatWhen(reminder.due_at)}
+                      <span className="tag" data-state={reminder.state}>
+                        {reminderState(reminder.state)}
+                      </span>
+                    </div>
+                  </div>
+                  <button className="secondary small" type="button" aria-label={`Delete reminder: ${reminder.text}`} onClick={() => attempt(api.deleteReminder(reminder.id), "Reminder deleted.")}>
+                    Delete
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </div>
+    </main>
   );
 }

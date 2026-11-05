@@ -11,5 +11,5 @@ Status: accepted for D0, two items open below.
 
 ## Open
 
-1. **`moby-ui`.** The plan puts the face in a shared `moby-ui` package. That repository does not exist yet, so the face lives in `src/face/` and is written to move out unchanged. It must not be copied into `moby-web`.
+1. **`moby-ui`.** The plan puts the face in a shared `moby-ui` package. That repository does not exist yet, so the face lives in `src/face/` and is written to move out unchanged. It must not be copied into `moby-web`. (Done: see [ADR 0008](0008-moby-ui.md).)
 2. **`moby-protocol` source.** No tag or package has been published. `package.json` uses `file:../moby-protocol` and CI builds the protocol from `main` into a sibling folder. Replace both with a pinned `@mobyuz/moby-protocol` version after the first release, and add the Rust crate by git tag when the first Rust module needs it.

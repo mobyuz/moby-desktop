@@ -17,15 +17,23 @@ jobs:
         with:
           path: moby-desktop
           persist-credentials: false
-      # The protocol package is not published yet, so build it from its main branch
-      # next to this checkout. Replace with a pinned @mobyuz/moby-protocol version
-      # once the first release exists (see docs/adr/0001-desktop-foundation.md).
+      # The protocol and face packages are not published yet, so build each from a pinned
+      # commit next to this checkout. All Moby repositories are public (owner decision), so
+      # no token is needed. Replace the pins with released @mobyuz/moby-protocol and
+      # @mobyuz/moby-ui versions once they exist (docs/adr/0001-desktop-foundation.md,
+      # docs/adr/0008-moby-ui.md).
+      # Protocol 0.2.0 with two-way proof (mobyuz/moby-protocol PR #5, not yet on main).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: mobyuz/moby-protocol
-          ref: main
+          ref: 0ddc9a9befddb59082ec35e354512b3d72129fcf
           path: moby-protocol
-          token: ${{ secrets.MOBY_PROTOCOL_READ_TOKEN }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: mobyuz/moby-ui
+          ref: 62de4e31ea598205dcc07bcbedb775ce0820a5ab
+          path: moby-ui
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -33,6 +41,11 @@ jobs:
       - run: npm install --global npm@11.6.2
       - name: Build moby-protocol
         working-directory: moby-protocol
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+      - name: Build moby-ui
+        working-directory: moby-ui
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
           npm run build
@@ -50,9 +63,14 @@ jobs:
         run: |
           cargo fmt --all -- --check
           cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
       - name: Build the Windows app
         working-directory: moby-desktop
         run: npm run tauri -- build --bundles nsis
+      - name: Release binary has no simulator and no PC microphone
+        working-directory: moby-desktop
+        shell: pwsh
+        run: ./scripts/check-release-excludes-dev.ps1 src-tauri/target/release/moby-desktop.exe
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: moby-windows-installer

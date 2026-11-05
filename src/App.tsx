@@ -1,84 +1,159 @@
-import { useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { EXPRESSION_META, MobyFace } from "@mobyuz/moby-ui";
+import { Icon } from "./icons";
+import { ApprovalDialog } from "./components/ApprovalDialog";
+import { robotStatus, STATUS_LABEL } from "./robot";
 import { Account } from "./screens/Account";
-import { Approvals } from "./screens/Approvals";
+import { Activity } from "./screens/Activity";
 import { Auth } from "./screens/Auth";
-import { Devices } from "./screens/Devices";
-import { Diagnostics } from "./screens/Diagnostics";
-import { Home } from "./screens/Home";
-import { Privacy } from "./screens/Privacy";
+import { Chat } from "./screens/Chat";
+import { Conversations } from "./screens/Conversations";
+import { Robot } from "./screens/Robot";
 import { Settings } from "./screens/Settings";
 import { Tools } from "./screens/Tools";
 import { AppProvider, useApp } from "./store";
 
-type Screen = "home" | "devices" | "tools" | "approvals" | "account" | "privacy" | "settings" | "diagnostics";
-
-const NAV: { id: Screen; label: string }[] = [
-  { id: "home", label: "Home" },
-  { id: "devices", label: "Devices" },
-  { id: "tools", label: "Tools & projects" },
-  { id: "approvals", label: "Approvals" },
-  { id: "account", label: "Account & usage" },
-  { id: "privacy", label: "Memory & privacy" },
-  { id: "settings", label: "Settings" },
-  { id: "diagnostics", label: "Diagnostics" },
-];
+type View = "chat" | "conversations" | "robot" | "tools" | "activity" | "account" | "settings";
 
 function Shell() {
   const app = useApp();
-  const [screen, setScreen] = useState<Screen>("home");
-  const pending = app.approvals.filter((item) => item.status === "pending").length;
+  const [view, setView] = useState<View>("chat");
+  const signedIn = app.profile !== null;
 
-  if (!app.profile && !app.offline) return <Auth />;
+  // After signing out, only Settings stays reachable. The next sign-in starts at the chat.
+  useEffect(() => {
+    if (!signedIn) setView((current) => (current === "settings" ? current : "chat"));
+  }, [signedIn]);
 
-  const title = NAV.find((item) => item.id === screen)?.label ?? "";
+  useEffect(() => {
+    if (view === "chat") return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setView("chat");
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [view]);
+
+  const settingsLink = (
+    <button className="ghost corner" type="button" onClick={() => setView("settings")}>
+      <Icon name="settings" />
+      Settings
+    </button>
+  );
+
+  if (app.status === "starting") {
+    return (
+      <main className="center">
+        <MobyFace expression="thinking" />
+      </main>
+    );
+  }
+
+  if (view !== "chat" && (view === "settings" || signedIn)) {
+    const page: Record<Exclude<View, "chat">, ReactNode> = {
+      conversations: <Conversations onDone={() => setView("chat")} />,
+      robot: <Robot />,
+      tools: <Tools />,
+      activity: <Activity />,
+      account: <Account />,
+      settings: <Settings />,
+    };
+    return (
+      <div className="app">
+        <header className="bar">
+          <button className="ghost" type="button" onClick={() => setView("chat")}>
+            <Icon name="back" />
+            {signedIn ? "Back to chat" : "Back"}
+          </button>
+        </header>
+        {app.storeWarning && (
+          <p className="notice banner" role="status">
+            {app.storeWarning}
+          </p>
+        )}
+        {app.voice.mic_on && (
+          <p className="notice banner mic-on" role="status">
+            MIC ON: this computer's microphone is recording (development build).
+          </p>
+        )}
+        {page[view]}
+        <ApprovalDialog />
+      </div>
+    );
+  }
+
+  if (app.status === "offline") {
+    return (
+      <>
+        <main className="center">
+          <MobyFace expression="disconnected" />
+          <h1>Can't connect to Moby</h1>
+          <p className="muted">Check your connection and try again.</p>
+          <button className="primary" type="button" onClick={app.retryStart}>
+            Try again
+          </button>
+        </main>
+        {settingsLink}
+      </>
+    );
+  }
+
+  if (!app.profile) {
+    return (
+      <>
+        <Auth />
+        {settingsLink}
+      </>
+    );
+  }
+
+  const name = app.profile.display_name ?? app.profile.email;
 
   return (
-    <div className="shell">
-      <nav className="sidebar" aria-label="Main">
-        <div className="brand">Moby</div>
-        <ul>
-          {NAV.map((item) => (
-            <li key={item.id}>
-              <button type="button" aria-current={screen === item.id ? "page" : undefined} onClick={() => setScreen(item.id)}>
-                {item.label}
-                {item.id === "approvals" && pending > 0 && <span className="badge">{pending}</span>}
-              </button>
-            </li>
-          ))}
-        </ul>
-        <div className="who">
-          {app.profile ? (
-            <>
-              <span className="muted">Signed in as</span>
-              <strong>{app.profile.display_name ?? app.profile.email}</strong>
-            </>
-          ) : (
-            <>
-              <span className="muted">No account</span>
-              <button className="link" type="button" onClick={app.leaveOffline}>
-                Sign in
-              </button>
-            </>
-          )}
+    <div className="app" data-expression={app.expression}>
+      <header className="bar">
+        <div className="bar-title">
+          <strong>Moby</strong>
+          <span className="muted" role="status">
+            {app.approval || app.nativePrompt ? "Waiting for you" : EXPRESSION_META[app.expression].status}
+          </span>
         </div>
-      </nav>
-
-      <div className="content">
-        <header className="topbar">
-          <h1>{title}</h1>
-          <span className="mode">Demo mode · no server, no robot needed</span>
-        </header>
-        <main>
-          {screen === "home" && <Home go={setScreen} />}
-          {screen === "devices" && <Devices />}
-          {screen === "tools" && <Tools />}
-          {screen === "approvals" && <Approvals />}
-          {screen === "account" && <Account onSignIn={app.leaveOffline} />}
-          {screen === "privacy" && <Privacy />}
-          {screen === "settings" && <Settings />}
-          {screen === "diagnostics" && <Diagnostics />}
-        </main>
-      </div>
+        <div className="bar-actions">
+          <button className="icon-button" type="button" title="New conversation" aria-label="New conversation" disabled={app.sending} onClick={app.newConversation}>
+            <Icon name="plus" />
+          </button>
+          <button className="icon-button" type="button" title="Conversations" aria-label="Conversations" onClick={() => setView("conversations")}>
+            <Icon name="chats" />
+          </button>
+          <button className="icon-button robot-button" type="button" data-status={robotStatus(app.robot)} title={`Robot: ${STATUS_LABEL[robotStatus(app.robot)]}`} aria-label={`Robot, ${STATUS_LABEL[robotStatus(app.robot)]}`} onClick={() => setView("robot")}>
+            <Icon name="robot" />
+          </button>
+          <button className="icon-button" type="button" title="Tools and projects" aria-label="Tools and projects" onClick={() => setView("tools")}>
+            <Icon name="tools" />
+          </button>
+          <button className="icon-button" type="button" title="Activity" aria-label="Activity" onClick={() => setView("activity")}>
+            <Icon name="activity" />
+          </button>
+          <button className="icon-button" type="button" title="Settings" aria-label="Settings" onClick={() => setView("settings")}>
+            <Icon name="settings" />
+          </button>
+          <button className="avatar" type="button" title="Account" aria-label="Account" onClick={() => setView("account")}>
+            {name.slice(0, 1).toUpperCase()}
+          </button>
+        </div>
+      </header>
+      {app.storeWarning && (
+        <p className="notice banner" role="status">
+          {app.storeWarning}
+        </p>
+      )}
+      {app.voice.mic_on && (
+        <p className="notice banner mic-on" role="status">
+          MIC ON: this computer's microphone is recording (development build).
+        </p>
+      )}
+      <Chat />
+      <ApprovalDialog />
     </div>
   );
 }
