@@ -1,3 +1,17 @@
+/* The face, from @mobyuz/moby-ui: it follows the app's own light and dark choice, keeps the app's outline colour and font. */
+
+:root {
+  --moby-face-bezel: var(--line);
+}
+
+.moby-face[data-theme="auto"] {
+  color-scheme: inherit;
+}
+
+.moby-face .moby-face__mark {
+  font-family: inherit;
+}
+
 /* App frame: one column, chat first */
 
 .app {
@@ -133,10 +147,10 @@
   min-height: 100dvh;
   padding: 24px 16px;
   text-align: center;
-  background: radial-gradient(60% 40% at 50% 28%, color-mix(in oklab, var(--mood) 16%, transparent), transparent);
+  background: radial-gradient(60% 40% at 50% 28%, color-mix(in oklab, var(--moby-mood) 16%, transparent), transparent);
 }
 
-.center .robot {
+.center .moby-face {
   width: 176px;
 }
 
@@ -200,7 +214,7 @@
   flex: 1;
   flex-direction: column;
   min-height: 0;
-  background: radial-gradient(70% 45% at 50% 0%, color-mix(in oklab, var(--mood) 14%, transparent), transparent);
+  background: radial-gradient(70% 45% at 50% 0%, color-mix(in oklab, var(--moby-mood) 14%, transparent), transparent);
 }
 
 .hero {
@@ -212,9 +226,9 @@
   padding: 16px 16px 8px;
 }
 
-.hero .robot {
+.hero .moby-face {
   width: 112px;
-  transition: width 0.25s ease;
+  transition: width 0.25s ease, --moby-face-current 0.5s ease;
 }
 
 .hero h1 {
@@ -228,7 +242,7 @@
   padding-bottom: 8vh;
 }
 
-.chat[data-empty="true"] .hero .robot {
+.chat[data-empty="true"] .hero .moby-face {
   width: 208px;
 }
 
@@ -675,11 +689,11 @@ button:disabled {
     padding-top: 10px;
   }
 
-  .hero .robot {
+  .hero .moby-face {
     width: 72px;
   }
 
-  .chat[data-empty="true"] .hero .robot {
+  .chat[data-empty="true"] .hero .moby-face {
     width: 144px;
   }
 }
@@ -796,7 +810,7 @@ button:disabled {
   border-radius: 14px;
 }
 
-.robot-card .robot {
+.robot-card .moby-face {
   width: 120px;
   height: auto;
 }

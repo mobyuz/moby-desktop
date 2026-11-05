@@ -21,6 +21,7 @@
   "dependencies": {
     "@fontsource-variable/onest": "5.3.1",
     "@mobyuz/moby-protocol": "file:../moby-protocol",
+    "@mobyuz/moby-ui": "file:../moby-ui",
     "@tauri-apps/api": "2.12.4",
     "react": "19.3.1",
     "react-dom": "19.3.1"

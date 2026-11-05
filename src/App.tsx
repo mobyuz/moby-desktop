@@ -1,6 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { EXPRESSION_META } from "./face/expressions";
-import { MobyFace } from "./face/MobyFace";
+import { EXPRESSION_META, MobyFace } from "@mobyuz/moby-ui";
 import { Icon } from "./icons";
 import { ApprovalDialog } from "./components/ApprovalDialog";
 import { robotStatus, STATUS_LABEL } from "./robot";

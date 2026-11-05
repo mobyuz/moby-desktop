@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, asFailure } from "../api";
-import { MobyFace } from "../face/MobyFace";
+import { MobyFace } from "@mobyuz/moby-ui";
 import { droppedFrames, isLive, PAIR_SECONDS, robotDetail, robotFace, robotStatus, STATUS_LABEL } from "../robot";
 import { useApp } from "../store";
 import type { PairedRobot, RobotPort } from "../types";

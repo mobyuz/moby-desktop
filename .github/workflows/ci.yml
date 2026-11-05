@@ -27,12 +27,28 @@ jobs:
           path: moby-protocol
           token: ${{ secrets.MOBY_PROTOCOL_READ_TOKEN }}
           persist-credentials: false
+      # The face package is not published yet either: build it from its main branch
+      # next to this checkout. Replace with a pinned @mobyuz/moby-ui version once
+      # it is released (see docs/adr/0008-moby-ui.md). Needs a read token secret,
+      # MOBY_UI_READ_TOKEN, because the repository is private.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: mobyuz/moby-ui
+          ref: main
+          path: moby-ui
+          token: ${{ secrets.MOBY_UI_READ_TOKEN }}
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: moby-desktop/.node-version
       - run: npm install --global npm@11.6.2
       - name: Build moby-protocol
         working-directory: moby-protocol
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+      - name: Build moby-ui
+        working-directory: moby-ui
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
           npm run build

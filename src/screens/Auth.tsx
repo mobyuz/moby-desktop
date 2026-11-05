@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { api, asFailure } from "../api";
-import { MobyFace } from "../face/MobyFace";
+import { MobyFace } from "@mobyuz/moby-ui";
 import { Icon } from "../icons";
 import { useApp } from "../store";
 

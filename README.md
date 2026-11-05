@@ -101,7 +101,7 @@ flowchart LR
 | UI | React 19, TypeScript, Vite | Screens and the animated face |
 | Contract | `@mobyuz/moby-protocol` | Shared expressions |
 
-The face is plain SVG driven by `data-expression` and CSS, so every expression stays distinct even with reduced motion.
+The face is `MobyFace` from the shared `@mobyuz/moby-ui` package: plain SVG driven by `data-expression` and CSS, so every expression stays distinct even with reduced motion. The app imports the package's `styles.css` and `mood.css` (the `--moby-mood` colour behind the page glow) and only adjusts the outline colour, the font, and the light/dark choice in `src/app.css`. See [ADR 0008](docs/adr/0008-moby-ui.md).
 
 The interface is black and white, in light and dark themes that you can pick under **Settings**. Colour is reserved for Moby's mood and for status. The tokens live at the top of `src/styles.css`.
 
@@ -109,7 +109,6 @@ The interface is black and white, in light and dark themes that you can pick und
 
 | Path | Purpose |
 | --- | --- |
-| `src/face/` | The virtual face and per-expression metadata |
 | `src/screens/` | Sign-in, chat, conversation list, tools and projects, activity, settings, and account |
 | `src/components/` | The approval dialog |
 | `src/store.tsx` | App state and the chat turn |
@@ -132,7 +131,7 @@ The interface is black and white, in light and dark themes that you can pick und
 You need Windows 11, Git, [Rustup](https://rustup.rs) (the toolchain is pinned in `rust-toolchain.toml`), the Visual Studio C++ Build Tools, and Node 24.13.0 with npm 11.6.2. WebView2 ships with current Windows 11.
 
 > [!IMPORTANT]
-> The app depends on `@mobyuz/moby-protocol`, which is **not published yet**. For now it is read from a sibling checkout, and that repository is currently **private**, so outside contributors cannot build the app until the protocol is released. It will be replaced by a pinned package version once the first release exists. See [ADR 0001](docs/adr/0001-desktop-foundation.md).
+> The app depends on `@mobyuz/moby-protocol` and `@mobyuz/moby-ui`, which are **not published yet**. For now both are read from sibling checkouts (`file:../moby-protocol`, `file:../moby-ui`), and those repositories are currently **private**, so outside contributors cannot build the app until they are released. Each becomes a pinned package version once its first release exists. See [ADR 0001](docs/adr/0001-desktop-foundation.md) and [ADR 0008](docs/adr/0008-moby-ui.md).
 
 With access to both repositories:
 
@@ -140,6 +139,11 @@ With access to both repositories:
 Set-Location D:\repos\moby
 gh repo clone mobyuz/moby-protocol
 Set-Location .\moby-protocol
+npm.cmd ci --ignore-scripts --no-audit --no-fund
+npm.cmd run build
+Set-Location ..
+gh repo clone mobyuz/moby-ui
+Set-Location .moby-ui
 npm.cmd ci --ignore-scripts --no-audit --no-fund
 npm.cmd run build
 Set-Location ..
