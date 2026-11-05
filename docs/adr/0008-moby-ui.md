@@ -18,5 +18,5 @@ ADR 0001 kept the face in `src/face/`, "written to move out unchanged", because 
 
 ## Open
 
-- **CI** checks out `moby-ui` next to the app (see `.github/workflows/ci.yml`). All repositories are public (owner decision), so the checkout needs no token and the `MOBY_UI_READ_TOKEN` secret is gone. Pending: `moby-ui` has no remote yet, so the job fails at checkout until it is pushed to GitHub.
+- **CI** checks out `moby-ui` next to the app (see `.github/workflows/ci.yml`). All repositories are public (owner decision), so the checkout needs no token and the `MOBY_UI_READ_TOKEN` secret is gone. It checks out a pinned `moby-ui` commit, as it does for `moby-protocol`.
 - `moby-ui` and the desktop each keep their own copy of `react` in `node_modules`, because `moby-ui` is linked from outside. The face uses only the JSX runtime, so this is harmless; deduplicate in the Vite config if a hook-based component is ever added to the package.
