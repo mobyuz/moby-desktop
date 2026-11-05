@@ -410,7 +410,7 @@ pub async fn forgot_password(api: State<'_, Api>, email: String) -> Result<(), F
 
 #[tauri::command]
 pub async fn sign_out(api: State<'_, Api>, agent: State<'_, Agent>) -> Result<(), Failure> {
-    agent.end_session();
+    crate::agent::begin_sign_out(&api, &agent);
     if let Some(refresh_token) = vault_get(REFRESH_TOKEN)? {
         // Signing out locally still works offline; the server session then expires on its own.
         let _ = api
@@ -490,7 +490,7 @@ pub async fn delete_account(
     }
     // The server has confirmed, so this account's history, registered folders, grants, reminders
     // and activity go too. The session ends either way.
-    agent.end_session();
+    crate::agent::begin_sign_out(&api, &agent);
     let cleaned = store.with(|db| db.delete_account_data(&account));
     api.forget_session().await?;
     cleaned.map_err(|_| {

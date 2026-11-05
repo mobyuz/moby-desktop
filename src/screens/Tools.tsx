@@ -50,8 +50,8 @@ export function Tools() {
         <section>
           <h2>Tools and projects</h2>
           <p>
-            Moby can only use the folders and programs you add here. It sees their names, never their locations, and it can never run anything you did not add. Opening a program or a project always asks you first.
-            Reading a project (Git status and file-name search) needs no question while the permission below is on.
+            Moby can only use the folders and programs you add here. It sees their names, never their locations, and it can never run anything you did not add. Opening a program or a project always asks you first,
+            every time, in a separate Windows window that Moby&rsquo;s page cannot click for you.
           </p>
           {notice && (
             <p className="ok" role="status">
@@ -72,6 +72,10 @@ export function Tools() {
               Add project folder
             </button>
           </div>
+          <p className="notice">
+            Adding a folder lets Moby read its <strong>file names</strong> and <strong>Git status</strong>, without asking each time. It cannot read what is inside your files. You can turn either off below, or remove the
+            folder, whenever you like.
+          </p>
           {registry.projects.length === 0 ? (
             <p className="muted">No projects yet. Adding a folder lets Moby read its Git status and search its file names.</p>
           ) : (
@@ -81,7 +85,7 @@ export function Tools() {
                   <div className="row between">
                     <div className="grow">
                       <strong>{project.name}</strong>
-                      <div className="hint path">{project.path}</div>
+                      <div className="hint path">{project.short_path}</div>
                     </div>
                     {removing === project.id ? (
                       <div className="row">
@@ -161,7 +165,7 @@ export function Tools() {
                 <li key={program.id} className="row between">
                   <div className="grow">
                     <strong>{program.name}</strong>
-                    <div className="hint path">{program.path}</div>
+                    <div className="hint path">{program.short_path}</div>
                   </div>
                   <button className="secondary small" type="button" aria-label={`Remove ${program.name}`} onClick={() => attempt(api.removeApp(program.id), "Removed.")}>
                     Remove

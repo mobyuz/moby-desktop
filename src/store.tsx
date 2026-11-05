@@ -23,6 +23,8 @@ export interface AppState {
   expression: Expression;
   /** A dialog from Rust waiting for the person. Only a dialog Rust opened can be answered. */
   approval: Approval | null;
+  /** Set while a native confirmation window (owned by Rust) is open for a launch. */
+  nativePrompt: string | null;
   /** What tools did during the current turn, in the app's own words. */
   notes: string[];
   language: Language;
@@ -75,6 +77,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [chatError, setChatError] = useState<string | null>(null);
   const [expression, setExpression] = useState<Expression>("idle");
   const [approval, setApproval] = useState<Approval | null>(null);
+  const [nativePrompt, setNativePrompt] = useState<string | null>(null);
   const [notes, setNotes] = useState<string[]>([]);
   const [language, setLanguageState] = useState<Language>(() => loadSavedLanguage() ?? "uz");
   const [retentionDays, setRetentionDays] = useState<number | null>(30);
@@ -107,6 +110,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     unsaved.current.clear();
     setConversations([]);
     setApproval(null);
+    setNativePrompt(null);
     setNotes([]);
     activate(null, []);
   }, [activate]);
@@ -283,6 +287,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setLive(null);
           setApproval(approvalFrom(event));
           setExpression("listening");
+        } else if (event.event === "native_prompt") {
+          setLive(null);
+          setNativePrompt(event.title);
+          setExpression("listening");
+        } else if (event.event === "native_prompt_closed") {
+          setNativePrompt(null);
+          setExpression("thinking");
         } else if (event.event === "approval_closed") {
           setApproval((current) => (current?.id === event.approval_id ? null : current));
           setExpression("thinking");
@@ -301,6 +312,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         .finally(() => {
           setSending(false);
           setApproval(null);
+          setNativePrompt(null);
         });
     },
     [addMessage, failTurn, guard, language, refreshAccount, settleFace],
@@ -318,6 +330,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       chatError,
       expression,
       approval,
+      nativePrompt,
       notes,
       answerApproval: async (decision) => {
         if (!approval) return;
@@ -327,6 +340,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       },
       stop: () => {
         setApproval(null);
+        setNativePrompt(null);
         void api.cancelTurn().catch(() => undefined);
       },
       retryStart: start,
@@ -438,6 +452,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       activeId,
       addMessage,
       approval,
+      nativePrompt,
       notes,
       chatError,
       conversations,

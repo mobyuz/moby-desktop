@@ -90,19 +90,10 @@ impl Action {
         }
     }
 
-    /// The key a session grant is filed under: the whole choice the person approved.
-    pub fn grant_key(&self) -> Option<String> {
-        match self {
-            Self::Git { project } => Some(project.id.clone()),
-            Self::Search { project, .. } => registry::root_of(&project.id),
-            Self::OpenApp { app } => Some(app.id.clone()),
-            Self::OpenProject { project, app } => Some(format!(
-                "{}+{}",
-                project.id,
-                app.as_ref().map_or("explorer", |a| a.id.as_str())
-            )),
-            Self::Reminder { .. } => None,
-        }
+    /// Launches are confirmed in a native window that Rust owns, never in the webview. There is
+    /// no grant of any kind for them: every launch asks.
+    pub fn needs_native_confirmation(&self) -> bool {
+        matches!(self, Self::OpenApp { .. } | Self::OpenProject { .. })
     }
 
     /// The sentence the app itself writes. The model never contributes to it, except through
@@ -147,8 +138,8 @@ pub enum Plan {
         action: Action,
         decision: &'static str,
     },
-    /// Wait for the person. `allow_session` says whether "for this session" may be offered.
-    Confirm { action: Action, allow_session: bool },
+    /// Wait for the person, every time. There is no "for this session" for anything that acts.
+    Confirm { action: Action },
     /// Refused before anything happened.
     Refuse {
         code: ToolFailureCode,
@@ -232,7 +223,7 @@ pub fn plan(
             let Some(app) = app else {
                 return refuse(ToolFailureCode::Unavailable, "unknown_resource", None);
             };
-            side_effect_plan(Action::OpenApp { app }, sessions, user, epoch)
+            side_effect_plan(Action::OpenApp { app })
         }
         ToolRequest::OpenProject { app_id, .. } => {
             let Some(project) = project else {
@@ -245,7 +236,7 @@ pub fn plan(
                     Some(&project.id),
                 );
             }
-            side_effect_plan(Action::OpenProject { project, app }, sessions, user, epoch)
+            side_effect_plan(Action::OpenProject { project, app })
         }
         ToolRequest::CreateReminder {
             text: reminder,
@@ -280,7 +271,6 @@ pub fn plan(
                     due_ms,
                     due_label,
                 },
-                allow_session: false,
             }
         }
     }
@@ -309,18 +299,9 @@ fn read_plan(
     refuse(ToolFailureCode::Denied, "no_grant", Some(resource))
 }
 
-fn side_effect_plan(action: Action, sessions: &SessionGrants, user: &str, epoch: u64) -> Plan {
-    let key = action.grant_key().unwrap_or_default();
-    if sessions.has(user, epoch, action.tool(), &key) {
-        return Plan::Run {
-            action,
-            decision: "session_grant",
-        };
-    }
-    Plan::Confirm {
-        action,
-        allow_session: true,
-    }
+/// Owner decision 2026-11-05: every launch is confirmed on its own, so nothing here consults a grant.
+fn side_effect_plan(action: Action) -> Plan {
+    Plan::Confirm { action }
 }
 
 fn path_code(error: paths::PathError) -> ToolFailureCode {
@@ -340,11 +321,12 @@ pub fn execute_blocking(
     cancel: &Arc<AtomicBool>,
     started: Instant,
     limit: Duration,
+    launched: &AtomicBool,
 ) -> Result<String, ToolFailureCode> {
     match action {
         Action::Git { project } => {
             let dir = paths::verify_dir(&project.path).map_err(path_code)?;
-            let summary = git::status(&dir, cancel)?;
+            let summary = git::status(&dir, cancel, started + limit)?;
             Ok(text::untrusted_output(
                 "git_status",
                 &summary.render(),
@@ -370,12 +352,12 @@ pub fn execute_blocking(
             ))
         }
         Action::OpenApp { app } => {
-            launch::open_app(&app.path)?;
+            launch::open_app_noting(&app.path, launched)?;
             Ok("ok".to_owned())
         }
         Action::OpenProject { project, app } => {
             let dir = paths::verify_dir(&project.path).map_err(path_code)?;
-            launch::open_project(app.as_ref().map(|a| a.path.as_str()), &dir)?;
+            launch::open_project_noting(app.as_ref().map(|a| a.path.as_str()), &dir, launched)?;
             Ok("ok".to_owned())
         }
         Action::Reminder { .. } => Err(ToolFailureCode::Failed),

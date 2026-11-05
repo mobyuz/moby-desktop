@@ -55,3 +55,28 @@ The test does not use the `filter.<name>.process` key: the long-running filter p
 | `git.exe status --porcelain` | Runs git with the repository's config: `core.fsmonitor`, filters and `core.sshCommand` are the classic ways a hostile repository runs code. It would need `-c` overrides for each, an allowlist that has to keep up with git, and a git installation. |
 | `libgit2` (`git2`) | A C dependency; its status also applies filter drivers in some builds, and it adds a build requirement. |
 | Reading `.git/index` by hand | Wrong answers (racy timestamps, line-ending conversion, ignore rules) are worse than no answer. |
+
+## Review fixes, 2026-11-05
+
+A security review showed that the checks above left a gap: gix 0.90.0 follows paths **named by files inside `.git`**, so a hostile folder could point it at a network share (starting Windows authentication to a server of the attacker's choosing the next time the automatic read ran) or make it report a different repository as the registered one.
+
+Every place gix can open a path that repository contents name, and what is done about it:
+
+| Path source | Followed by gix? | Handling |
+| --- | --- | --- |
+| `.git/commondir` | **Yes** (`open/repository.rs` reads it). | Refused before opening; after opening, `common_dir` must equal `git_dir`. Test with a control that shows gix follows it. |
+| `.git/objects/info/alternates` | **Yes** (object database). | Refused before opening, including a `\\server\share` entry. Test with a control: a commit that exists only in the other folder is found through it. |
+| `.git/gitdir` (linked worktree back pointer) | Used for worktrees. | Refused before opening. |
+| Links (junctions, symlinks) among the top level of `.git`, of `.git/objects`, and anywhere under `.git/refs` | Followed by the operating system. | Refused before opening, checked without following links, with a bound of 5,000 entries (past it the answer is `PartialResult`). |
+| `include.path` and `includeIf` in the config | Yes, with default permissions. | `Options::isolated()` turns includes off. Test with a control: with gix's permissive permissions the included file changes the answer; with ours it does not. |
+| `core.excludesFile`, `core.attributesFile` | Yes, with default options. | Both are read through `filter_config_section`, which drops repository-local sections, so they are never read. Test with a control for `core.excludesFile`. |
+| `core.worktree` | Not followed by gix 0.90.0 for this layout. | The working tree is still compared with the registered folder. |
+| `info/grafts`, `shallow` | `shallow` is read but is inside `.git`. There is no reader for grafts in the compiled crates (searched). | Nothing to do; the link check covers `shallow` as a top-level entry. |
+| Symbolic refs (`HEAD` containing `ref: ...`) | Names are validated as reference names under the git directory. | Nothing to do beyond the link check. |
+| `.gitattributes` and `.gitignore` files in the work tree | Read, but they can only name patterns and filter driver names. | Driver names are inert (no driver is defined); patterns are matched, not opened. |
+
+### What can and cannot be interrupted
+
+`git_status` now takes a deadline as well as a cancel flag. It checks both before opening, after opening, after reading the index, for every status item, and for every commit of the history walk, so cancel and timeout stop the work at those points.
+
+Not interruptible once started: `gix::open_opts` (reading the config and refs), `index_or_empty` (reading and decoding the index), the first step of a history walk with a hidden tip (it may read many commits before yielding the first), and the directory walk between two items. The agent returns `Timeout` to the model on time regardless, and the worker thread finishes in the background; gix's interrupt flag, which is set at the same moment, ends the status walk at its next check. The history walk is bounded at 5,000 commits per direction and returns `PartialResult` for the whole answer when the bound is hit.

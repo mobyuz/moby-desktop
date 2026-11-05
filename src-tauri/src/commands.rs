@@ -10,16 +10,63 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::agent::Agent;
 use crate::api::{Api, Failure};
+use crate::confirm::{Confirmer, Prompt};
 use crate::grants::SessionGrant;
 use crate::paths;
 use crate::registry::{self, App, AuditEntry, Grant, Project, Reminder};
 use crate::store::{Store, now_ms};
 use crate::text;
 
+/// A project as the page sees it. The real location never leaves Rust: only the last two parts.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct ProjectView {
+    id: String,
+    name: String,
+    short_path: String,
+    created_at: i64,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct AppView {
+    id: String,
+    name: String,
+    short_path: String,
+    created_at: i64,
+}
+
+/// `C:\Users\me\work\moby-api` becomes `work\moby-api`.
+pub fn short_path(path: &str) -> String {
+    let parts: Vec<&str> = path.split('\\').filter(|p| !p.is_empty()).collect();
+    let tail = &parts[parts.len().saturating_sub(2)..];
+    text::short_line(&tail.join("\\"), 80)
+}
+
+impl From<&Project> for ProjectView {
+    fn from(p: &Project) -> Self {
+        Self {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            short_path: short_path(&p.path),
+            created_at: p.created_at,
+        }
+    }
+}
+
+impl From<&App> for AppView {
+    fn from(a: &App) -> Self {
+        Self {
+            id: a.id.clone(),
+            name: a.name.clone(),
+            short_path: short_path(&a.path),
+            created_at: a.created_at,
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub struct Overview {
-    projects: Vec<Project>,
-    apps: Vec<App>,
+    projects: Vec<ProjectView>,
+    apps: Vec<AppView>,
     grants: Vec<Grant>,
     session_grants: Vec<SessionGrant>,
 }
@@ -40,7 +87,9 @@ async fn pick(app: &AppHandle, folder: bool) -> Result<Option<PathBuf>, Failure>
             dialog = dialog.set_parent(window);
         }
         if folder {
-            dialog.set_title("Choose a project folder").pick_folder()
+            dialog
+                .set_title("Choose a project folder. Moby will be able to read its file names and Git status (not what is inside files) until you turn that off.")
+                .pick_folder()
         } else {
             dialog
                 .set_title("Choose a program")
@@ -63,8 +112,8 @@ pub async fn list_registry(
     let (projects, apps, grants) =
         store.with(|db| Ok((db.projects(&user)?, db.apps(&user)?, db.grants(&user, now)?)))?;
     Ok(Overview {
-        projects,
-        apps,
+        projects: projects.iter().map(ProjectView::from).collect(),
+        apps: apps.iter().map(AppView::from).collect(),
         grants,
         session_grants: agent.sessions.list(&user, api.epoch()),
     })
@@ -75,7 +124,7 @@ pub async fn add_project(
     app: AppHandle,
     api: State<'_, Api>,
     store: State<'_, Store>,
-) -> Result<Option<Project>, Failure> {
+) -> Result<Option<ProjectView>, Failure> {
     let user = api.account_id()?;
     let Some(picked) = pick(&app, true).await? else {
         return Ok(None);
@@ -90,7 +139,7 @@ pub async fn add_project(
             now_ms(),
         )
     })?;
-    Ok(Some(project))
+    Ok(Some(ProjectView::from(&project)))
 }
 
 #[tauri::command]
@@ -98,7 +147,7 @@ pub async fn add_app(
     app: AppHandle,
     api: State<'_, Api>,
     store: State<'_, Store>,
-) -> Result<Option<App>, Failure> {
+) -> Result<Option<AppView>, Failure> {
     let user = api.account_id()?;
     let Some(picked) = pick(&app, false).await? else {
         return Ok(None);
@@ -114,7 +163,7 @@ pub async fn add_app(
             now_ms(),
         )
     })?;
-    Ok(Some(added))
+    Ok(Some(AppView::from(&added)))
 }
 
 #[tauri::command]
@@ -240,7 +289,108 @@ pub async fn list_activity(
 pub async fn clear_activity(
     api: State<'_, Api>,
     store: State<'_, Store>,
+    agent: State<'_, Agent>,
 ) -> Result<usize, Failure> {
     let user = api.account_id()?;
-    store.with(|db| db.audit_clear(&user))
+    clear_activity_with(&store, &user, agent.confirmer().as_ref()).await
+}
+
+/// Clearing the log is confirmed in a native window, so a compromised page cannot wipe the
+/// evidence of what it did. Nothing is deleted unless the person chose OK.
+pub(crate) async fn clear_activity_with(
+    store: &Store,
+    user: &str,
+    confirmer: &dyn Confirmer,
+) -> Result<usize, Failure> {
+    let prompt = Prompt::new(
+        "Clear the activity log?",
+        &[
+            "This deletes every entry of the activity log for your account on this computer."
+                .to_owned(),
+        ],
+        "delete them",
+    );
+    if !confirmer.confirm(prompt).await {
+        return Err(Failure::new(
+            "canceled",
+            "The activity log was not cleared.",
+        ));
+    }
+    store.with(|db| db.audit_clear(user))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::confirm::testing::Scripted;
+    use crate::paths::testing::Scratch;
+    use crate::registry::AuditRecord;
+
+    fn store_with_entries() -> (Scratch, Store) {
+        let scratch = Scratch::new();
+        let store = Store::open(&scratch.path("data"));
+        let record = AuditRecord {
+            tool: "git_status",
+            resource_id: None,
+            decision: "auto",
+            duration_ms: None,
+            result_code: Some("ok"),
+        };
+        store
+            .with(|db| db.audit_add("alice", &record, now_ms()))
+            .unwrap();
+        (scratch, store)
+    }
+
+    #[tokio::test]
+    async fn the_activity_log_is_cleared_only_after_a_native_ok() {
+        let (_dir, store) = store_with_entries();
+        let refuse = Scripted::new(&[false]);
+        let error = clear_activity_with(&store, "alice", &refuse)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "canceled");
+        assert_eq!(
+            store.with(|db| db.audit_list("alice")).unwrap().len(),
+            1,
+            "nothing deleted without OK"
+        );
+        assert_eq!(refuse.shown().len(), 1);
+
+        let allow = Scripted::new(&[true]);
+        assert_eq!(
+            clear_activity_with(&store, "alice", &allow).await.unwrap(),
+            1
+        );
+        assert!(store.with(|db| db.audit_list("alice")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_page_gets_two_path_parts_and_never_the_real_path() {
+        assert_eq!(
+            short_path("C:\\Users\\me\\work\\moby-api"),
+            "work\\moby-api"
+        );
+        assert_eq!(short_path("C:\\tools\\ed.exe"), "tools\\ed.exe");
+        assert_eq!(short_path("C:\\x"), "C:\\x");
+        let project = Project {
+            id: "proj_1".into(),
+            name: "n".into(),
+            path: "C:\\secret\\deep\\place".into(),
+            created_at: 1,
+        };
+        let json = serde_json::to_string(&ProjectView::from(&project)).unwrap();
+        assert!(
+            !json.contains("secret") && !json.contains("C:") && json.contains("deep"),
+            "{json}"
+        );
+        let app = App {
+            id: "app_1".into(),
+            name: "n".into(),
+            path: "C:\\secret\\bin\\a.exe".into(),
+            created_at: 1,
+        };
+        let json = serde_json::to_string(&AppView::from(&app)).unwrap();
+        assert!(!json.contains("secret") && !json.contains("C:"), "{json}");
+    }
 }

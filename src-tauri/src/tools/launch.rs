@@ -13,6 +13,7 @@
 
 use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use moby_protocol::ToolFailureCode;
 
@@ -30,7 +31,11 @@ fn code_for(error: PathError) -> ToolFailureCode {
     }
 }
 
-fn start(stored: &str, folder: Option<&VerifiedDir>) -> Result<(), ToolFailureCode> {
+fn start(
+    stored: &str,
+    folder: Option<&VerifiedDir>,
+    launched: &AtomicBool,
+) -> Result<(), ToolFailureCode> {
     let (_lock, program): (_, VerifiedProgram) = paths::lock_program(stored).map_err(code_for)?;
     let mut command = Command::new(program.os());
     if let Some(folder) = folder {
@@ -49,27 +54,44 @@ fn start(stored: &str, folder: Option<&VerifiedDir>) -> Result<(), ToolFailureCo
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-    command
-        .spawn()
-        .map(drop)
-        .map_err(|_| ToolFailureCode::Failed)
+    let child = command.spawn().map_err(|_| ToolFailureCode::Failed)?;
+    // From here on the program exists. A cancel or timeout that arrives now must not be reported
+    // as if nothing had happened.
+    launched.store(true, Ordering::SeqCst);
+    drop(child);
+    Ok(())
 }
 
 /// Starts a registered program with no arguments.
+#[cfg(test)]
 pub fn open_app(stored_exe: &str) -> Result<(), ToolFailureCode> {
-    start(stored_exe, None)
+    open_app_noting(stored_exe, &AtomicBool::new(false))
+}
+
+/// Like [`open_app`], and sets `launched` the moment the program has been started.
+pub fn open_app_noting(stored_exe: &str, launched: &AtomicBool) -> Result<(), ToolFailureCode> {
+    start(stored_exe, None, launched)
+}
+
+#[cfg(test)]
+pub fn open_project(stored_exe: Option<&str>, folder: &VerifiedDir) -> Result<(), ToolFailureCode> {
+    open_project_noting(stored_exe, folder, &AtomicBool::new(false))
 }
 
 /// Opens a folder with the chosen program, or in Windows Explorer when none is chosen.
-pub fn open_project(stored_exe: Option<&str>, folder: &VerifiedDir) -> Result<(), ToolFailureCode> {
+pub fn open_project_noting(
+    stored_exe: Option<&str>,
+    folder: &VerifiedDir,
+    launched: &AtomicBool,
+) -> Result<(), ToolFailureCode> {
     match stored_exe {
-        Some(exe) => start(exe, Some(folder)),
+        Some(exe) => start(exe, Some(folder), launched),
         None => {
             let root = std::env::var("SystemRoot").map_err(|_| ToolFailureCode::Unavailable)?;
             let explorer =
                 paths::canonical_of(&format!("{}\\explorer.exe", root.trim_end_matches('\\')))
                     .map_err(code_for)?;
-            start(&explorer, Some(folder))
+            start(&explorer, Some(folder), launched)
         }
     }
 }

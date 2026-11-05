@@ -108,7 +108,7 @@ function Shell() {
         <div className="bar-title">
           <strong>Moby</strong>
           <span className="muted" role="status">
-            {app.approval ? "Waiting for you" : EXPRESSION_META[app.expression].status}
+            {app.approval || app.nativePrompt ? "Waiting for you" : EXPRESSION_META[app.expression].status}
           </span>
         </div>
         <div className="bar-actions">

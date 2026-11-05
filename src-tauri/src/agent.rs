@@ -22,6 +22,7 @@ use tokio::sync::{Notify, oneshot};
 use uuid::Uuid;
 
 use crate::api::{Api, Failure, Frames, open_agent_stream};
+use crate::confirm::{Confirmer, Prompt};
 use crate::grants::SessionGrants;
 use crate::registry::{self, AuditRecord};
 use crate::store::{Store, now_ms};
@@ -33,13 +34,13 @@ pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_MESSAGES: usize = 64;
 const MAX_TEXT_BYTES: usize = 8 * 1024;
 
-/// What the person chose in the dialog. Anything else cannot be expressed.
+/// What the person chose in the in-page dialog, which now only serves reminders. Launches are
+/// confirmed in a native window and have no webview answer at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
     Deny,
     Once,
-    Session,
 }
 
 /// Events for the webview. The tool request itself is never among them.
@@ -60,9 +61,13 @@ pub enum UiEvent {
         details: Vec<String>,
         /// What the model said alongside the request. Untrusted; shown apart from the title.
         moby_says: Option<String>,
-        allow_session: bool,
         timeout_ms: u64,
     },
+    /// A launch is being confirmed in a native window that Rust owns. Nothing to answer here.
+    NativePrompt {
+        title: String,
+    },
+    NativePromptClosed,
     ApprovalClosed {
         approval_id: String,
         outcome: &'static str,
@@ -283,7 +288,6 @@ fn build_offer(
 struct Pending {
     user: String,
     epoch: u64,
-    allow_session: bool,
     tx: oneshot::Sender<Decision>,
 }
 
@@ -293,13 +297,22 @@ pub struct Agent {
     active: Mutex<Option<Cancel>>,
     approval_timeout: Duration,
     tool_timeout: Duration,
+    confirmer: Arc<dyn Confirmer>,
+    runner: Runner,
 }
 
-impl Default for Agent {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// Runs the blocking part of a tool. A field so a test can slow it down.
+pub(crate) type Runner = Arc<
+    dyn Fn(
+            &Action,
+            &Arc<AtomicBool>,
+            Instant,
+            Duration,
+            &AtomicBool,
+        ) -> Result<String, ToolFailureCode>
+        + Send
+        + Sync,
+>;
 
 /// Clears the running-turn slot, whatever way the turn ends.
 struct TurnGuard<'a>(&'a Agent);
@@ -320,18 +333,28 @@ struct Env<'a> {
 }
 
 impl Agent {
-    pub fn new() -> Self {
-        Self::with_timeouts(APPROVAL_TIMEOUT, tools::TOOL_TIMEOUT)
+    pub fn new(confirmer: Arc<dyn Confirmer>) -> Self {
+        Self::with_timeouts(APPROVAL_TIMEOUT, tools::TOOL_TIMEOUT, confirmer)
     }
 
-    pub(crate) fn with_timeouts(approval_timeout: Duration, tool_timeout: Duration) -> Self {
+    pub(crate) fn with_timeouts(
+        approval_timeout: Duration,
+        tool_timeout: Duration,
+        confirmer: Arc<dyn Confirmer>,
+    ) -> Self {
         Self {
+            confirmer,
+            runner: Arc::new(tools::execute_blocking),
             sessions: SessionGrants::default(),
             pending: Mutex::new(HashMap::new()),
             active: Mutex::new(None),
             approval_timeout,
             tool_timeout,
         }
+    }
+
+    pub fn confirmer(&self) -> Arc<dyn Confirmer> {
+        Arc::clone(&self.confirmer)
     }
 
     fn pending(&self) -> std::sync::MutexGuard<'_, HashMap<String, Pending>> {
@@ -367,16 +390,10 @@ impl Agent {
     ) -> Result<(), Failure> {
         let gone = || Failure::new("not_found", "That request is no longer waiting.");
         let mut pending = self.pending();
-        let entry = pending
+        pending
             .get(approval_id)
             .filter(|p| p.user == user && p.epoch == epoch)
             .ok_or_else(gone)?;
-        if decision == Decision::Session && !entry.allow_session {
-            return Err(Failure::new(
-                "invalid_input",
-                "That can only be allowed once.",
-            ));
-        }
         let entry = pending.remove(approval_id).ok_or_else(gone)?;
         entry.tx.send(decision).map_err(|_| gone())
     }
@@ -584,8 +601,11 @@ impl Agent {
     ) -> ToolResult {
         let tool = tools::tool_name(&call.request);
         let id = call.call_id.clone();
+        // Still the same sign-in, and nobody pressed Stop or signed out.
         let current = |env: &Env<'_>| {
-            env.api.account_id().is_ok_and(|u| u == env.user) && env.api.epoch() == env.epoch
+            !env.cancel.is_canceled()
+                && env.api.account_id().is_ok_and(|u| u == env.user)
+                && env.api.epoch() == env.epoch
         };
         if !current(env) {
             return self.finish(
@@ -625,52 +645,28 @@ impl Agent {
                 );
             }
             Plan::Run { action, decision } => (action, decision),
-            Plan::Confirm {
-                action,
-                allow_session,
-            } => {
-                let answer = self.ask(env, &action, allow_session, says).await;
-                let decision = match answer {
-                    Answer::Decided(Decision::Deny) => {
-                        return self.finish(
-                            env,
-                            id,
-                            tool,
-                            &action.describe(),
-                            action.resource_id().as_deref(),
-                            "denied",
-                            None,
-                            Err(ToolFailureCode::Denied),
-                        );
-                    }
-                    Answer::Expired => {
-                        return self.finish(
-                            env,
-                            id,
-                            tool,
-                            &action.describe(),
-                            action.resource_id().as_deref(),
-                            "expired",
-                            None,
-                            Err(ToolFailureCode::Denied),
-                        );
-                    }
-                    Answer::Canceled => {
-                        return self.finish(
-                            env,
-                            id,
-                            tool,
-                            &action.describe(),
-                            action.resource_id().as_deref(),
-                            "canceled",
-                            None,
-                            Err(ToolFailureCode::Canceled),
-                        );
-                    }
-                    Answer::Decided(chosen) => chosen,
+            Plan::Confirm { action } => {
+                let answer = self.ask(env, &action, says).await;
+                let refusal = match answer {
+                    Answer::Allowed => None,
+                    Answer::Denied => Some(("denied", ToolFailureCode::Denied)),
+                    Answer::Expired => Some(("expired", ToolFailureCode::Denied)),
+                    Answer::Canceled => Some(("canceled", ToolFailureCode::Canceled)),
                 };
-                // The world may have changed while the dialog was open: another sign-in, a removed
-                // folder, a revoked grant. The approval counts only for exactly what was shown.
+                if let Some((decision, code)) = refusal {
+                    return self.finish(
+                        env,
+                        id,
+                        tool,
+                        &action.describe(),
+                        action.resource_id().as_deref(),
+                        decision,
+                        None,
+                        Err(code),
+                    );
+                }
+                // The world may have changed while the window was open: another sign-in, a Stop,
+                // a removed folder. The answer counts only for exactly what was shown.
                 if !current(env) {
                     return self.finish(
                         env,
@@ -691,7 +687,7 @@ impl Agent {
                     &call.request,
                     now_ms(),
                 ) {
-                    Plan::Confirm { action: again, .. } | Plan::Run { action: again, .. } => {
+                    Plan::Confirm { action: again } | Plan::Run { action: again, .. } => {
                         again == action
                     }
                     Plan::Refuse { .. } => false,
@@ -708,21 +704,22 @@ impl Agent {
                         Err(ToolFailureCode::Unavailable),
                     );
                 }
-                if decision == Decision::Session
-                    && let Some(key) = action.grant_key()
-                {
-                    self.sessions.add(&env.user, env.epoch, action.tool(), &key);
-                }
-                (
-                    action,
-                    if decision == Decision::Session {
-                        "approved_session"
-                    } else {
-                        "approved_once"
-                    },
-                )
+                (action, "approved_once")
             }
         };
+        // Last look before anything runs.
+        if !current(env) {
+            return self.finish(
+                env,
+                id,
+                tool,
+                &action.describe(),
+                action.resource_id().as_deref(),
+                "canceled",
+                None,
+                Err(ToolFailureCode::Canceled),
+            );
+        }
         let started = Instant::now();
         let result = self.run(env, &action).await;
         self.finish(
@@ -773,13 +770,12 @@ impl Agent {
         }
     }
 
-    async fn ask(
-        &self,
-        env: &Env<'_>,
-        action: &Action,
-        allow_session: bool,
-        says: Option<String>,
-    ) -> Answer {
+    /// Asks the person. A launch is confirmed in a native window opened and answered by Rust, so
+    /// the webview never sees an id it could answer. Only reminders use the in-page dialog.
+    async fn ask(&self, env: &Env<'_>, action: &Action, says: Option<String>) -> Answer {
+        if action.needs_native_confirmation() {
+            return self.ask_native(env, action).await;
+        }
         let approval_id = format!("apr_{}", Uuid::new_v4().hyphenated());
         let (tx, rx) = oneshot::channel();
         self.pending().insert(
@@ -787,7 +783,6 @@ impl Agent {
             Pending {
                 user: env.user.clone(),
                 epoch: env.epoch,
-                allow_session,
                 tx,
             },
         );
@@ -797,11 +792,14 @@ impl Agent {
             title: action.describe(),
             details: action.details(),
             moby_says: says,
-            allow_session,
             timeout_ms: u64::try_from(self.approval_timeout.as_millis()).unwrap_or(u64::MAX),
         });
         let answer = tokio::select! {
-            decided = rx => decided.map_or(Answer::Canceled, Answer::Decided),
+            decided = rx => match decided {
+                Ok(Decision::Once) => Answer::Allowed,
+                Ok(Decision::Deny) => Answer::Denied,
+                Err(_) => Answer::Canceled,
+            },
             () = tokio::time::sleep(self.approval_timeout) => Answer::Expired,
             () = env.cancel.cancelled() => Answer::Canceled,
         };
@@ -809,12 +807,31 @@ impl Agent {
         env.sink.emit(UiEvent::ApprovalClosed {
             approval_id,
             outcome: match answer {
-                Answer::Decided(Decision::Deny) => "denied",
-                Answer::Decided(_) => "approved",
+                Answer::Denied => "denied",
+                Answer::Allowed => "approved",
                 Answer::Expired => "expired",
                 Answer::Canceled => "canceled",
             },
         });
+        answer
+    }
+
+    async fn ask_native(&self, env: &Env<'_>, action: &Action) -> Answer {
+        let mut lines = vec![action.describe()];
+        lines.extend(action.details());
+        // The model's own words are left out of the window altogether.
+        let prompt = Prompt::new("Moby asks permission", &lines, "allow this once");
+        env.sink.emit(UiEvent::NativePrompt {
+            title: text::short_line(&action.describe(), 160),
+        });
+        let answer = tokio::select! {
+            allowed = self.confirmer.confirm(prompt) => {
+                if allowed { Answer::Allowed } else { Answer::Denied }
+            }
+            () = tokio::time::sleep(self.approval_timeout) => Answer::Expired,
+            () = env.cancel.cancelled() => Answer::Canceled,
+        };
+        env.sink.emit(UiEvent::NativePromptClosed);
         answer
     }
 
@@ -825,21 +842,50 @@ impl Agent {
             return Ok(format!("Reminder saved. ID: {id}"));
         }
         let stop = Arc::new(AtomicBool::new(false));
+        let launched = Arc::new(AtomicBool::new(false));
         let started = Instant::now();
-        let (work, flag, limit) = (action.clone(), Arc::clone(&stop), self.tool_timeout);
-        let mut task = tokio::task::spawn_blocking(move || {
-            tools::execute_blocking(&work, &flag, started, limit)
-        });
-        tokio::select! {
+        let (work, flag, limit, seen) = (
+            action.clone(),
+            Arc::clone(&stop),
+            self.tool_timeout,
+            Arc::clone(&launched),
+        );
+        let runner = Arc::clone(&self.runner);
+        let mut task =
+            tokio::task::spawn_blocking(move || runner(&work, &flag, started, limit, &seen));
+        let result = tokio::select! {
             done = &mut task => done.unwrap_or(Err(ToolFailureCode::Failed)),
             () = tokio::time::sleep(self.tool_timeout) => { stop.store(true, Ordering::SeqCst); Err(ToolFailureCode::Timeout) }
             () = env.cancel.cancelled() => { stop.store(true, Ordering::SeqCst); Err(ToolFailureCode::Canceled) }
-        }
+        };
+        settle(result, launched.load(Ordering::SeqCst))
     }
 }
 
+/// A launch that was cut off by a timeout or a cancel after the program had already started is
+/// reported as started: the activity log and the model must not say nothing happened.
+pub(crate) fn settle(
+    result: Result<String, ToolFailureCode>,
+    launched: bool,
+) -> Result<String, ToolFailureCode> {
+    match result {
+        Err(ToolFailureCode::Timeout | ToolFailureCode::Canceled) if launched => {
+            Ok("ok".to_owned())
+        }
+        other => other,
+    }
+}
+
+/// Starts a sign-out in the only safe order: the sign-in epoch changes first, so any decision that
+/// arrives afterwards is stale, and only then are the running turn and the dialogs dropped.
+pub fn begin_sign_out(api: &Api, agent: &Agent) {
+    api.set_account(None);
+    agent.end_session();
+}
+
 enum Answer {
-    Decided(Decision),
+    Allowed,
+    Denied,
     Expired,
     Canceled,
 }
