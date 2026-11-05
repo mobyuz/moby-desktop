@@ -1071,6 +1071,10 @@ impl SimRobot {
                     self.respond(&id, None);
                 }
             }
+            ControlMessage::Cancel { .. } if self.forger => {
+                // A hostile device ignores the request and carries on streaming.
+                self.respond(&id, None);
+            }
             ControlMessage::Cancel { data, .. } => {
                 if self
                     .talk

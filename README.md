@@ -131,7 +131,7 @@ The interface is black and white, in light and dark themes that you can pick und
 You need Windows 11, Git, [Rustup](https://rustup.rs) (the toolchain is pinned in `rust-toolchain.toml`), the Visual Studio C++ Build Tools, and Node 24.13.0 with npm 11.6.2. WebView2 ships with current Windows 11.
 
 > [!IMPORTANT]
-> The app depends on `@mobyuz/moby-protocol` and `@mobyuz/moby-ui`, which are **not published yet**. For now both are read from sibling checkouts (`file:../moby-protocol`, `file:../moby-ui`), and those repositories are currently **private**, so outside contributors cannot build the app until they are released. Each becomes a pinned package version once its first release exists. See [ADR 0001](docs/adr/0001-desktop-foundation.md) and [ADR 0008](docs/adr/0008-moby-ui.md).
+> The app depends on `@mobyuz/moby-protocol` and `@mobyuz/moby-ui`, which are **not published yet**. For now both are read from sibling checkouts (`file:../moby-protocol`, `file:../moby-ui`), and `moby-ui` has no remote yet, so outside contributors cannot build the app until both are pushed and released (all Moby repositories are to be public). Each becomes a pinned package version once its first release exists. See [ADR 0001](docs/adr/0001-desktop-foundation.md) and [ADR 0008](docs/adr/0008-moby-ui.md).
 
 With access to both repositories:
 

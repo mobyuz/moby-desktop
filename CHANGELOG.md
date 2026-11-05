@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Two-way proof: the robot now has to prove that it holds the pairing key, as the desktop already did. A device that copies the robot's ID but has no key can no longer reach the speech service or the agent: no proof within 3 seconds means no audio is used, and the Robot page says so. A robot reporting that its pairing was reset, or that it is unpaired while you have a key saved for it, no longer makes the app forget the key. After pairing, the connection restarts once so voice is ready on a proven session. Tested against the simulator only. See [ADR 0006](docs/adr/0006-robot-link.md).
+- `moby-ui` CI checkout no longer needs a token (all repositories are public); it fails until `moby-ui` is pushed to GitHub.
+
 - Security review fixes for the robot link and voice: a robot's `pair_reset` no longer deletes the saved key (you choose to unpair); turning cloud voice on and opening a USB port that does not look like a Moby are confirmed in a native window; hellos are rate-limited; robot text loses bidirectional and zero-width characters; one voice stream is capped at 30 s; revoking voice stops the turn first; and `scripts/check-release-excludes-dev.ps1` checks the release binary for the simulator and the PC microphone.
 - The face now comes from the shared `@mobyuz/moby-ui` package instead of `src/face/`. Same drawings, motion, colours and accessible names; the build needs a built `../moby-ui` checkout next to this one. See [ADR 0008](docs/adr/0008-moby-ui.md).
 

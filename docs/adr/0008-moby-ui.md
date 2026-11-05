@@ -5,7 +5,7 @@ Status: accepted. One item open below.
 
 ## Context
 
-ADR 0001 kept the face in `src/face/`, "written to move out unchanged", because the shared `moby-ui` package did not exist. It does now (`@mobyuz/moby-ui` 0.1.0, private, unpublished) and exports `MobyFace`, `EXPRESSION_META`, and two stylesheets.
+ADR 0001 kept the face in `src/face/`, "written to move out unchanged", because the shared `moby-ui` package did not exist. It does now (`@mobyuz/moby-ui` 0.1.0, unpublished; like every Moby repository it is to be public) and exports `MobyFace`, `EXPRESSION_META`, and two stylesheets.
 
 ## Choice
 
@@ -18,5 +18,5 @@ ADR 0001 kept the face in `src/face/`, "written to move out unchanged", because 
 
 ## Open
 
-- **CI** checks out `moby-ui` next to the app (see `.github/workflows/ci.yml`). The checkout needs a read token for the private repository, `MOBY_UI_READ_TOKEN`, like the protocol one. Until the owner creates that secret the job fails at checkout.
+- **CI** checks out `moby-ui` next to the app (see `.github/workflows/ci.yml`). All repositories are public (owner decision), so the checkout needs no token and the `MOBY_UI_READ_TOKEN` secret is gone. Pending: `moby-ui` has no remote yet, so the job fails at checkout until it is pushed to GitHub.
 - `moby-ui` and the desktop each keep their own copy of `react` in `node_modules`, because `moby-ui` is linked from outside. The face uses only the JSX runtime, so this is harmless; deduplicate in the Vite config if a hook-based component is ever added to the package.

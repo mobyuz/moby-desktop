@@ -34,7 +34,11 @@ The model's output is an untrusted request, never permission. Everything below a
 | A canceled or revoked turn still sends a request | Explicit cancel check and biased `select!`; revoke stops the turn first | `a_turn_that_is_already_canceled_never_sends_its_request`, `revoking_stops_the_turn_first_...` |
 | A spoken "yes" approves a tool | Voice has no path to the approval code; launches need the native window | `a_spoken_yes_never_approves_a_reminder`, `a_spoken_yes_never_launches_a_program_the_native_window_decides` |
 
-Known gap: the robot is not yet proven to the desktop (owner decision of 2026-11-05: two-way proof, to come).
+| A device copies the robot ID, says it is paired, answers keepalives with `command_ok` and sends audio | The robot must send a valid `session_proof` (HMAC over the pairing key, both nonces, device and session) within 3 s of the ack; only that authenticates; no audio, no upload, no agent turn without it | `a_forged_device_with_the_real_id_that_answers_keepalives_and_sends_audio_reaches_nothing` |
+| The robot proof is reflected, replayed, computed with the wrong nonce, late or missing | Fresh `desktop_nonce` per ack, constant-time check against this session, first proof only, 3 s window, label that keeps the two proofs apart | `robots_that_do_not_prove_the_key_are_unproven_and_get_no_audio`, `a_proof_from_an_old_session_is_no_use_on_a_new_one`, the protocol vector tests |
+| `hello` with `paired: false` for an ID whose key is saved | Stale, not new: key kept, nothing offered, no audio | `a_hello_that_says_unpaired_for_an_id_whose_key_is_saved_is_stale_not_new` |
+
+Known limit: after the handshake frames carry no MAC. A device that takes over or relays the cable after a proven handshake is not stopped (protocol ADR 0005).
 
 ## Cross-cutting
 

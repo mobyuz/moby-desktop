@@ -212,9 +212,7 @@ fn with_the_stored_key_the_robot_accepts_the_proof_and_the_state_becomes_ready()
     let mut rig = paired_rig(7, Some(7));
     rig.connect();
     rig.run(300);
-    // The robot has accepted the session but nothing has confirmed it yet.
-    assert_eq!(rig.snap().phase, Phase::Connecting);
-    rig.run(1_500);
+    // The robot proves itself right after the ack, so no keepalive round trip is needed.
     assert_eq!(rig.snap().phase, Phase::Ready);
     assert!(rig.sim(|robot| robot.is_authenticated()));
     assert!(rig.snap().device.unwrap().paired_here);
