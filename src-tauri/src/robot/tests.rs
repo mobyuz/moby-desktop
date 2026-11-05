@@ -7,6 +7,7 @@ use moby_protocol::usb::{ControlMessage, Frame, FrameKind, MAX_WIRE_LEN, PairKey
 use moby_protocol::{Expression, StableId};
 use serde_json::json;
 
+use super::audio::{AudioEvent, AudioSink};
 use super::clock::{Clock, ManualClock};
 use super::link::Framer;
 use super::pairings::{MemoryPairings, PairingStore};
@@ -46,6 +47,10 @@ struct Rig {
 }
 
 fn rig(robot: SimRobot, pairings: MemoryPairings) -> Rig {
+    rig_with_audio(robot, pairings, Arc::new(|_| {}))
+}
+
+fn rig_with_audio(robot: SimRobot, pairings: MemoryPairings, audio: AudioSink) -> Rig {
     let clock = Arc::new(ManualClock::new());
     let robot = Arc::new(Mutex::new(robot));
     let connector = SimConnector::new(Arc::clone(&robot), Arc::clone(&clock) as Arc<dyn Clock>);
@@ -66,6 +71,7 @@ fn rig(robot: SimRobot, pairings: MemoryPairings) -> Rig {
             })
         },
     )
+    .with_audio(audio)
     .with_random(Box::new(|| Box::new(SeqRandom(0))))
     .with_log({
         let logs = Arc::clone(&logs);
@@ -1027,4 +1033,279 @@ fn every_message_the_desktop_builds_is_a_valid_desktop_frame() {
         payload: b"{}",
     };
     assert!(frame.encode(&mut wire).is_ok());
+}
+
+// ---- push-to-talk audio (D4) ---------------------------------------------------------------
+
+use super::sim::{AUDIO_MARKER, StreamFault};
+
+type Heard = Arc<Mutex<Vec<AudioEvent>>>;
+
+/// A paired, authenticated robot that offers `usb_pcm`, and everything the link hands on.
+fn audio_rig() -> (Rig, Heard) {
+    let heard: Heard = Arc::new(Mutex::new(Vec::new()));
+    let sink: AudioSink = {
+        let heard = Arc::clone(&heard);
+        Arc::new(move |event| heard.lock().unwrap_or_else(PoisonError::into_inner).push(event))
+    };
+    let robot = SimRobot::new(DEVICE)
+        .with_key(key(7))
+        .with_capabilities(&["usb_pcm"]);
+    let mut rig = rig_with_audio(robot, MemoryPairings::with_key(DEVICE, key(7)), sink);
+    rig.connect();
+    rig.run(2_500);
+    assert_eq!(rig.snap().phase, Phase::Ready);
+    assert!(rig.snap().device.unwrap().audio);
+    (rig, heard)
+}
+
+fn summary(heard: &Heard) -> Vec<String> {
+    heard
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .map(|event| match event {
+            AudioEvent::Started { .. } => "started".to_owned(),
+            AudioEvent::Utterance { pcm, .. } => format!("utterance:{}", pcm.len()),
+            AudioEvent::Aborted { reason, .. } => format!("aborted:{}", reason.code()),
+        })
+        .collect()
+}
+
+fn talk(rig: &mut Rig, ms: u64) {
+    let now = rig.now();
+    rig.sim(|robot| robot.press(now));
+    rig.run(ms);
+    let now = rig.now();
+    rig.sim(|robot| robot.release(now));
+    rig.run(300);
+}
+
+#[test]
+fn a_held_button_becomes_one_checked_utterance() {
+    let (mut rig, heard) = audio_rig();
+    talk(&mut rig, 1_000);
+    let events = summary(&heard);
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(events[0], "started");
+    let size: usize = events[1].strip_prefix("utterance:").unwrap().parse().unwrap();
+    assert!(
+        (45 * 640..=55 * 640).contains(&size) && size % 640 == 0,
+        "{size}"
+    );
+    if let AudioEvent::Utterance { pcm, .. } = &heard.lock().unwrap()[1] {
+        assert!(pcm.as_bytes().windows(8).any(|w| w == AUDIO_MARKER));
+    }
+    assert_eq!(rig.snap().stats.audio_streams, 1);
+    assert_eq!(rig.snap().stats.audio_aborted, 0);
+}
+
+#[test]
+fn every_stream_fault_ends_the_turn_with_its_own_reason_and_no_audio_is_passed_on() {
+    let cases = [
+        (StreamFault::SkipFrame(3), "aborted:audio_sequence", 1_000),
+        (StreamFault::DuplicateFrame(3), "aborted:audio_sequence", 1_000),
+        (StreamFault::SwapFrames(3), "aborted:audio_sequence", 1_000),
+        (StreamFault::WrongStream(3), "aborted:audio_sequence", 1_000),
+        (StreamFault::WrongSize(3), "aborted:audio_frame_size", 1_000),
+        (StreamFault::Overrun(3), "aborted:audio_overrun", 1_000),
+        (StreamFault::CutOff(10), "aborted:audio_stalled", 3_000),
+        (StreamFault::NeverEnds, "aborted:audio_too_long", 6_000),
+        (StreamFault::WrongCount, "aborted:audio_incomplete", 1_000),
+        (StreamFault::MuteAt(10), "aborted:audio_muted", 1_000),
+        (StreamFault::MuteAndKeepSending(10), "aborted:audio_muted", 1_000),
+        (StreamFault::RobotCancel(10), "aborted:audio_canceled", 1_000),
+    ];
+    for (fault, expected, ms) in cases {
+        let (mut rig, heard) = audio_rig();
+        rig.sim(|robot| robot.inject_stream_fault(fault));
+        talk(&mut rig, ms);
+        let events = summary(&heard);
+        assert_eq!(events, ["started", expected], "{fault:?}");
+        assert_eq!(rig.snap().stats.audio_streams, 0, "{fault:?}");
+        // A new, healthy turn still works after any fault (the mute cases need the switch opened).
+        let now = rig.now();
+        rig.sim(|robot| robot.set_mute(now, false));
+        rig.run(300);
+        talk(&mut rig, 600);
+        assert!(
+            summary(&heard).last().unwrap().starts_with("utterance:"),
+            "{fault:?}: {:?}",
+            summary(&heard)
+        );
+    }
+}
+
+#[test]
+fn a_bad_stream_makes_the_desktop_tell_the_robot_to_cancel_it() {
+    let (mut rig, _heard) = audio_rig();
+    rig.sim(|robot| robot.inject_stream_fault(StreamFault::SkipFrame(3)));
+    talk(&mut rig, 500);
+    assert_eq!(
+        rig.received_names()
+            .iter()
+            .filter(|n| *n == "cancel")
+            .count(),
+        1
+    );
+    assert!(!rig.sim(|robot| robot.is_streaming()));
+}
+
+#[test]
+fn mute_mid_stream_discards_the_audio_on_the_desktop_even_if_the_robot_keeps_talking() {
+    let (mut rig, heard) = audio_rig();
+    rig.sim(|robot| robot.inject_stream_fault(StreamFault::MuteAndKeepSending(10)));
+    talk(&mut rig, 1_500);
+    assert_eq!(summary(&heard), ["started", "aborted:audio_muted"]);
+    assert!(
+        rig.snap().stats.audio_frames_ignored > 0,
+        "frames after the mute were thrown away"
+    );
+    assert!(rig.snap().muted);
+}
+
+#[test]
+fn stop_in_the_app_ends_capture_handling_and_cancels_the_robots_stream() {
+    let (mut rig, heard) = audio_rig();
+    let now = rig.now();
+    rig.sim(|robot| robot.press(now));
+    rig.run(400);
+    rig.sup.command(Command::CancelCapture).unwrap();
+    rig.run(300);
+    assert_eq!(summary(&heard), ["started", "aborted:canceled"]);
+    assert!(rig.received_names().contains(&"cancel".to_owned()));
+    assert!(!rig.sim(|robot| robot.is_streaming()));
+}
+
+#[test]
+fn the_robot_face_follows_what_the_desktop_asks_for() {
+    let (mut rig, _heard) = audio_rig();
+    rig.sup
+        .command(Command::Face(Expression::Thinking, 0))
+        .unwrap();
+    rig.run(300);
+    assert_eq!(rig.snap().expression, Expression::Thinking);
+    rig.sup
+        .command(Command::Face(Expression::Speaking, 0))
+        .unwrap();
+    rig.run(300);
+    assert_eq!(rig.snap().expression, Expression::Speaking);
+    rig.sup
+        .command(Command::Face(Expression::Happy, 1_000))
+        .unwrap();
+    rig.run(300);
+    assert_eq!(rig.snap().expression, Expression::Happy);
+    // The mute switch outranks it: nothing is sent while muted.
+    let now = rig.now();
+    rig.sim(|robot| robot.set_mute(now, true));
+    rig.run(300);
+    let count = |rig: &Rig| {
+        rig.received_names()
+            .iter()
+            .filter(|n| *n == "expression")
+            .count()
+    };
+    let before = count(&rig);
+    rig.sup
+        .command(Command::Face(Expression::Thinking, 0))
+        .unwrap();
+    rig.run(300);
+    assert_eq!(before, count(&rig));
+}
+
+#[test]
+fn a_robot_that_may_not_stream_is_refused_and_told_to_stop() {
+    let (mut rig, heard) = audio_rig();
+    let now = rig.now();
+    rig.sim(|robot| robot.set_mute(now, true));
+    rig.run(300);
+    rig.sim(|robot| {
+        robot.inject_payload(
+            &serde_json::to_vec(&event_json(
+                "e-77",
+                "audio_start",
+                json!({"stream_id":9,"reason":"button","codec":"pcm_s16le","sample_rate":16000,
+                       "channels":1,"frame_ms":20,"preroll_ms":0}),
+            ))
+            .unwrap(),
+        );
+    });
+    rig.run(300);
+    assert_eq!(summary(&heard), ["aborted:audio_not_allowed"]);
+    assert!(rig.received_names().contains(&"cancel".to_owned()));
+}
+
+#[test]
+fn the_whole_chain_runs_from_the_simulated_robot_through_stub_speech_services() {
+    use crate::agent::{Agent, Sink, TurnInput, UiEvent};
+    use crate::confirm::testing::Scripted;
+    use crate::voice::play::fake::FakeSpeaker;
+    use crate::voice::testing::{FakeRobot, Stub};
+    use crate::voice::{Deps, Voice};
+
+    struct Quiet;
+    impl Sink for Quiet {
+        fn emit(&self, _: UiEvent) {}
+    }
+
+    let (mut rig, heard) = audio_rig();
+    talk(&mut rig, 1_000);
+    let utterance = heard.lock().unwrap().remove(1);
+    assert!(matches!(utterance, AudioEvent::Utterance { .. }));
+
+    let scratch = crate::paths::testing::Scratch::new();
+    let store = crate::store::Store::open(&scratch.path("data"));
+    store
+        .with(|db| db.set_voice_consent(Some(("alice", "dev-1")), 1))
+        .unwrap();
+    let stub = Stub::new();
+    let api = crate::api::Api::signed_in_for_test(&stub.url, "alice");
+    let agent = Agent::with_timeouts(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_secs(5),
+        Arc::new(Scripted::new(&[])),
+    );
+    let (robot, speaker, voice) = (FakeRobot::default(), FakeSpeaker::default(), Voice::new());
+    let deps = Deps {
+        api: &api,
+        store: &store,
+        agent: &agent,
+        speaker: &speaker,
+        robot: &robot,
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let page = async {
+            loop {
+                if let Some(pending) = voice.view().pending {
+                    let _ = voice
+                        .continue_turn(
+                            &pending.id,
+                            TurnInput::for_test(&pending.text),
+                            Arc::new(Quiet),
+                        )
+                        .await;
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        };
+        tokio::join!(voice.handle_event(&deps, utterance), page);
+    });
+    assert_eq!(stub.to("/v1/voice/stt").len(), 1);
+    assert_eq!(speaker.played.lock().unwrap().len(), 1);
+    assert_eq!(
+        robot.faces(),
+        [Expression::Thinking, Expression::Speaking, Expression::Happy]
+    );
+    // The faces are then sent over the link, and the simulated robot shows the last one.
+    let faces: Vec<_> = robot.faces.lock().unwrap().clone();
+    for (expression, hold) in faces {
+        rig.sup.command(Command::Face(expression, hold)).unwrap();
+        rig.run(200);
+    }
+    assert_eq!(rig.snap().expression, Expression::Happy);
 }

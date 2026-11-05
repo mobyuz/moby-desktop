@@ -4,6 +4,7 @@ import { MobyFace } from "../face/MobyFace";
 import { droppedFrames, isLive, PAIR_SECONDS, robotDetail, robotFace, robotStatus, STATUS_LABEL } from "../robot";
 import { useApp } from "../store";
 import type { PairedRobot, RobotPort } from "../types";
+import { VoicePanel } from "./VoicePanel";
 import { RobotDevPanel } from "./RobotDev";
 
 /** Counts down from the pairing window, starting when the robot starts waiting for its button. */
@@ -271,10 +272,16 @@ export function Robot() {
             <dd>{robot.stats.oversized}</dd>
             <dt>Unreadable messages</dt>
             <dd>{robot.stats.malformed_json + robot.stats.wrong_sender}</dd>
-            <dt>Audio ignored (not supported yet)</dt>
+            <dt>Voice streams used</dt>
+            <dd>{robot.stats.audio_streams}</dd>
+            <dt>Voice streams thrown away</dt>
+            <dd>{robot.stats.audio_aborted}</dd>
+            <dt>Stray audio ignored</dt>
             <dd>{robot.stats.audio_frames_ignored + robot.stats.audio_events_ignored}</dd>
           </dl>
         </section>
+
+        <VoicePanel />
 
         {import.meta.env.DEV && <RobotDevPanel />}
       </div>

@@ -4,8 +4,9 @@ import { api, asFailure, type ApiFailure } from "./api";
 import { buildTurn, exceedsLimit, titleFrom } from "./history";
 import { clearSavedLanguage, loadSavedLanguage, saveLanguageFallback } from "./prefs";
 import { NO_ROBOT, shownExpression } from "./robot";
+import { NO_VOICE, voiceBusy, voiceFace } from "./voice";
 import { approvalFrom, toolNote } from "./tools";
-import type { AgentEvent, Approval, ChatMessage, ConversationSummary, Decision, Installation, Language, Profile, RobotSnapshot, UsageInfo } from "./types";
+import type { AgentEvent, Approval, ChatMessage, ConsentStatus, ConversationSummary, Decision, Installation, Language, Profile, RobotSnapshot, UsageInfo, VoiceView } from "./types";
 
 export type Status = "starting" | "offline" | "signedOut" | "signedIn";
 
@@ -25,6 +26,12 @@ export interface AppState {
   expression: Expression;
   /** The robot link, as Rust reports it. */
   robot: RobotSnapshot;
+  /** The voice chain, as Rust reports it. */
+  voice: VoiceView;
+  /** Whether this account has turned cloud voice on. Null until Rust has said. */
+  voiceConsent: ConsentStatus | null;
+  acceptVoice(): Promise<void>;
+  revokeVoice(): Promise<void>;
   /** A dialog from Rust waiting for the person. Only a dialog Rust opened can be answered. */
   approval: Approval | null;
   /** Set while a native confirmation window (owned by Rust) is open for a launch. */
@@ -81,6 +88,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [chatError, setChatError] = useState<string | null>(null);
   const [expression, setExpression] = useState<Expression>("idle");
   const [robot, setRobot] = useState<RobotSnapshot>(NO_ROBOT);
+  const [voice, setVoice] = useState<VoiceView>(NO_VOICE);
+  const [voiceConsent, setVoiceConsent] = useState<ConsentStatus | null>(null);
   const [approval, setApproval] = useState<Approval | null>(null);
   const [nativePrompt, setNativePrompt] = useState<string | null>(null);
   const [notes, setNotes] = useState<string[]>([]);
@@ -114,6 +123,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     cache.current.clear();
     unsaved.current.clear();
     setConversations([]);
+    setVoiceConsent(null);
     setApproval(null);
     setNativePrompt(null);
     setNotes([]);
@@ -179,6 +189,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     (next: Profile) => {
       setProfile(next);
       setStatus("signedIn");
+      api
+        .voiceStatus()
+        .then(setVoiceConsent)
+        .catch(() => setVoiceConsent({ accepted: false, version: null }));
       refreshAccount().catch(() => undefined);
       void loadHistory();
     },
@@ -225,6 +239,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     api
       .robotSubscribe((next) => {
         if (active) setRobot(next);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // The voice chain belongs to this computer too. Rust sends its state, and the words it heard.
+  useEffect(() => {
+    let active = true;
+    api
+      .voiceSubscribe((next) => {
+        if (active) setVoice(next);
       })
       .catch(() => undefined);
     return () => {
@@ -280,7 +307,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const runTurn = useCallback(
-    (conversationId: string, history: ChatMessage[]) => {
+    (conversationId: string, history: ChatMessage[], voiceTurnId?: string) => {
       setSending(true);
       setChatError(null);
       setLive(null);
@@ -324,7 +351,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       // Only this conversation goes to the server, never the others.
       const turn = buildTurn(history);
-      guard(() => api.agentTurn(turn, language, onEvent))
+      guard(() => (voiceTurnId ? api.voiceTurn(voiceTurnId, turn, language, onEvent) : api.agentTurn(turn, language, onEvent)))
         .then(() => refreshAccount().catch(() => undefined))
         .catch((failure: ApiFailure) => failTurn(failure))
         .finally(() => {
@@ -336,6 +363,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [addMessage, failTurn, guard, language, refreshAccount, settleFace],
   );
 
+  // Words that Rust heard from the robot: shown and saved in the conversation like typed text (and
+  // under the same retention), then the turn continues in Rust. Each one is taken once.
+  const takenVoiceTurn = useRef<string | null>(null);
+  useEffect(() => {
+    const pending = voice.pending;
+    if (!pending || takenVoiceTurn.current === pending.id) return;
+    takenVoiceTurn.current = pending.id;
+    if (sending) {
+      void api.voiceCancel().catch(() => undefined);
+      return;
+    }
+    setSending(true);
+    const message = { id: crypto.randomUUID(), role: "user" as const, text: pending.text };
+    void (async () => {
+      const id = activeRef.current ?? (await startConversation(titleFrom(pending.text)));
+      addMessage(id, message);
+      runTurn(id, [...(cache.current.get(id) ?? [])], pending.id);
+    })();
+  }, [addMessage, runTurn, sending, startConversation, voice.pending]);
+
   const value = useMemo<AppState>(
     () => ({
       status,
@@ -346,8 +393,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
       live,
       sending,
       chatError,
-      expression: shownExpression(expression, sending || approval !== null, robot),
+      expression: shownExpression(voiceFace(voice) ?? expression, sending || approval !== null || voiceBusy(voice), robot),
       robot,
+      voice,
+      voiceConsent,
+      acceptVoice: async () => {
+        setVoiceConsent(await guard(() => api.voiceAcceptConsent()));
+      },
+      revokeVoice: async () => {
+        // Off here at once; the call only reports if the server could not be told.
+        setVoiceConsent({ accepted: false, version: null });
+        try {
+          await guard(() => api.voiceRevokeConsent());
+        } finally {
+          void api.voiceStatus().then(setVoiceConsent).catch(() => undefined);
+        }
+      },
       approval,
       nativePrompt,
       notes,
@@ -361,6 +422,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setApproval(null);
         setNativePrompt(null);
         void api.cancelTurn().catch(() => undefined);
+        void api.voiceCancel().catch(() => undefined);
       },
       retryStart: start,
       signIn: async (email, password) => {
@@ -494,6 +556,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       storeWarning,
       syncHistory,
       usage,
+      voice,
+      voiceConsent,
     ],
   );
 

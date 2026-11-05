@@ -27,7 +27,7 @@ mod pairings;
 mod service;
 mod session;
 #[cfg(any(test, debug_assertions))]
-mod sim;
+pub(crate) mod sim;
 mod supervisor;
 #[cfg(test)]
 mod tests;

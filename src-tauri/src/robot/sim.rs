@@ -250,6 +250,10 @@ impl SimRobot {
     /// The hardware mute switch.
     pub fn set_mute(&mut self, now: u64, muted: bool) {
         self.step(now);
+        self.apply_mute(muted);
+    }
+
+    fn apply_mute(&mut self, muted: bool) {
         if muted == self.muted {
             return;
         }
@@ -444,8 +448,7 @@ impl SimRobot {
             }
             match fault {
                 StreamFault::MuteAt(at) if at == index => {
-                    let now = self.now;
-                    self.set_mute(now, true);
+                    self.apply_mute(true);
                     return;
                 }
                 StreamFault::MuteAndKeepSending(at) if at == index => {

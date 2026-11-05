@@ -178,6 +178,8 @@ export interface RobotStats {
   sequence_gaps: number;
   audio_frames_ignored: number;
   audio_events_ignored: number;
+  audio_streams: number;
+  audio_aborted: number;
   unexpected_messages: number;
 }
 
@@ -214,4 +216,40 @@ export type RobotDevAction =
   | { action: "detach" | "press" | "release" | "long_press" | "unplug" | "plug" | "corrupt_frames" | "oversize" | "garbage" }
   | { action: "mute"; muted: boolean }
   | { action: "show"; expression: Expression }
-  | { action: "silence"; on: boolean };
+  | { action: "silence"; on: boolean }
+  | { action: "stream_fault"; fault: DevFault };
+
+/** A way for the simulated robot's next push-to-talk stream to go wrong. */
+export type DevFault =
+  | "none"
+  | "bad_sequence"
+  | "duplicate"
+  | "swap"
+  | "wrong_size"
+  | "overrun"
+  | "cut_off"
+  | "never_ends"
+  | "wrong_count"
+  | "wrong_stream"
+  | "mute_mid_stream"
+  | "mute_and_keep_sending"
+  | "robot_cancel";
+
+export type VoiceStage = "idle" | "listening" | "transcribing" | "awaiting_turn" | "thinking" | "synthesizing" | "speaking" | "error";
+
+/** What Rust says about the voice chain. Never audio. */
+export interface VoiceView {
+  stage: VoiceStage;
+  message: string | null;
+  code: string | null;
+  /** The words Rust heard, until the page has put them in the conversation. */
+  pending: { id: string; text: string } | null;
+  /** The development microphone is capturing. Never true in a release build. */
+  mic_on: boolean;
+  dev_mic: boolean;
+}
+
+export interface ConsentStatus {
+  accepted: boolean;
+  version: string | null;
+}

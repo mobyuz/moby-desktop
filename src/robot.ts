@@ -25,6 +25,8 @@ export const NO_ROBOT: RobotSnapshot = {
     sequence_gaps: 0,
     audio_frames_ignored: 0,
     audio_events_ignored: 0,
+    audio_streams: 0,
+    audio_aborted: 0,
     unexpected_messages: 0,
   },
 };

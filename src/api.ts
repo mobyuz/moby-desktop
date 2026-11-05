@@ -1,5 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { ActivityEntry, AgentEvent, ChatMessage, ConversationSummary, Decision, Installation, Language, PairedRobot, Profile, Program, Project, Registry, Reminder, RobotDevAction, RobotPort, RobotSnapshot, Settings, ToolName, TurnMessage, UsageInfo } from "./types";
+import type { ActivityEntry, AgentEvent, ChatMessage, ConsentStatus, ConversationSummary, Decision, VoiceView, Installation, Language, PairedRobot, Profile, Program, Project, Registry, Reminder, RobotDevAction, RobotPort, RobotSnapshot, Settings, ToolName, TurnMessage, UsageInfo } from "./types";
 
 /** Every command runs in src-tauri/src (api.rs and store.rs). Tokens and the history file never reach this side. */
 
@@ -77,6 +77,25 @@ export const api = {
   robotCancelPairing: () => invoke<void>("robot_cancel_pairing"),
   robotDevices: () => invoke<PairedRobot[]>("robot_devices"),
   robotUnpair: (deviceId: string) => invoke<void>("robot_unpair", { deviceId }),
+  // Voice. Audio, tokens and the speech requests stay in Rust; the page gets states, words and notices.
+  voiceSubscribe: (onChange: (view: VoiceView) => void) => {
+    const channel = new Channel<VoiceView>();
+    channel.onmessage = onChange;
+    return invoke<void>("voice_subscribe", { onEvent: channel });
+  },
+  voiceStatus: () => invoke<ConsentStatus>("voice_status"),
+  voiceAcceptConsent: () => invoke<ConsentStatus>("voice_accept_consent"),
+  voiceRevokeConsent: () => invoke<ConsentStatus>("voice_revoke_consent"),
+  /** Stop, at whatever stage the voice chain is in. */
+  voiceCancel: () => invoke<void>("voice_cancel"),
+  /** Continues a voice turn after its transcript was shown. Rust refuses it unless the newest message is that transcript. */
+  voiceTurn: (turnId: string, messages: TurnMessage[], language: Language, onEvent: (event: AgentEvent) => void) => {
+    const channel = new Channel<AgentEvent>();
+    channel.onmessage = onEvent;
+    return invoke<void>("voice_turn", { turnId, turn: { messages, language }, onEvent: channel });
+  },
+  /** Development builds only: the computer's microphone. A release build answers not_available. */
+  voiceDevMic: (on: boolean) => invoke<void>("voice_dev_mic", { on }),
   /** The simulator panel. Development builds only; a release build answers not_available. */
   robotDev: (action: RobotDevAction) => invoke<void>("robot_dev", { action }),
 };

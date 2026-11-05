@@ -1,6 +1,23 @@
 import { useState } from "react";
 import { api, asFailure } from "../api";
-import type { RobotDevAction } from "../types";
+import { useApp } from "../store";
+import type { DevFault, RobotDevAction } from "../types";
+
+const FAULTS: [string, DevFault][] = [
+  ["Lose a frame", "bad_sequence"],
+  ["Repeat a frame", "duplicate"],
+  ["Swap two frames", "swap"],
+  ["Wrong frame size", "wrong_size"],
+  ["Overrun", "overrun"],
+  ["Cut off", "cut_off"],
+  ["Never end", "never_ends"],
+  ["Wrong frame count", "wrong_count"],
+  ["Wrong stream", "wrong_stream"],
+  ["Mute mid-stream", "mute_mid_stream"],
+  ["Mute, keep sending", "mute_and_keep_sending"],
+  ["Robot cancels", "robot_cancel"],
+  ["No fault", "none"],
+];
 
 /**
  * Drives the simulated robot. This file is only reached when `import.meta.env.DEV` is true, so the
@@ -49,6 +66,9 @@ export function RobotDevPanel() {
         {button("Speaking", { action: "show", expression: "speaking" })}
         {button("Idle", { action: "show", expression: "idle" })}
       </div>
+      <h3>Next voice stream goes wrong</h3>
+      <p className="hint">Pair the simulated robot first, then pick a fault, then press and release talk.</p>
+      <div className="row">{FAULTS.map(([label, fault]) => button(label, { action: "stream_fault", fault }))}</div>
       <h3>Faults</h3>
       <div className="row">
         {button("Corrupt 3 frames", { action: "corrupt_frames" })}
@@ -59,6 +79,7 @@ export function RobotDevPanel() {
         {button("Pull the cable", { action: "unplug" })}
         {button("Plug the cable", { action: "plug" })}
       </div>
+      <MicControl />
       {sent && (
         <p className="hint" role="status">
           Sent: {sent}
@@ -70,5 +91,34 @@ export function RobotDevPanel() {
         </p>
       )}
     </section>
+  );
+}
+
+/** The computer's own microphone. Development builds only; the product hears through the robot. */
+function MicControl() {
+  const app = useApp();
+  const [error, setError] = useState<string | null>(null);
+  const toggle = (on: boolean) => {
+    setError(null);
+    api.voiceDevMic(on).catch((failure: unknown) => setError(asFailure(failure).message));
+  };
+  return (
+    <>
+      <h3>Computer microphone (development only)</h3>
+      <p className="hint">Lets you try the voice chain without a robot. Needs voice turned on. The product never uses this microphone.</p>
+      <div className="row">
+        <button className="secondary small" type="button" disabled={app.voice.mic_on} onClick={() => toggle(true)}>
+          Microphone on
+        </button>
+        <button className="secondary small" type="button" disabled={!app.voice.mic_on} onClick={() => toggle(false)}>
+          Microphone off and send
+        </button>
+      </div>
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+    </>
   );
 }

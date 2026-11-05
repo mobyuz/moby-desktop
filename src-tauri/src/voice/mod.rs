@@ -25,6 +25,8 @@ pub(crate) mod client;
 pub(crate) mod mic;
 pub(crate) mod play;
 #[cfg(test)]
+pub(crate) mod testing;
+#[cfg(test)]
 mod tests;
 pub(crate) mod wav;
 

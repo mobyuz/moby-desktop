@@ -911,3 +911,9 @@ button:disabled {
   margin: 12px 0 6px;
   font-size: 0.95rem;
 }
+
+.mic-on {
+  background: #b3261e;
+  color: #fff;
+  font-weight: 700;
+}

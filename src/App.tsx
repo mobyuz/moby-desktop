@@ -72,6 +72,11 @@ function Shell() {
             {app.storeWarning}
           </p>
         )}
+        {app.voice.mic_on && (
+          <p className="notice banner mic-on" role="status">
+            MIC ON: this computer's microphone is recording (development build).
+          </p>
+        )}
         {page[view]}
         <ApprovalDialog />
       </div>
@@ -141,6 +146,11 @@ function Shell() {
       {app.storeWarning && (
         <p className="notice banner" role="status">
           {app.storeWarning}
+        </p>
+      )}
+      {app.voice.mic_on && (
+        <p className="notice banner mic-on" role="status">
+          MIC ON: this computer's microphone is recording (development build).
         </p>
       )}
       <Chat />
