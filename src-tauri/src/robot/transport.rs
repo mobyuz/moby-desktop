@@ -107,7 +107,9 @@ impl Connector for SerialConnector {
         let mut ports: Vec<PortInfo> = found
             .into_iter()
             .filter_map(|port| match port.port_type {
-                serialport::SerialPortType::UsbPort(usb) if plausible_port_name(&port.port_name) => {
+                serialport::SerialPortType::UsbPort(usb)
+                    if plausible_port_name(&port.port_name) =>
+                {
                     Some(PortInfo {
                         kind: kind_of(usb.vid, usb.pid),
                         label: clean_label(usb.product.as_deref().unwrap_or("")),

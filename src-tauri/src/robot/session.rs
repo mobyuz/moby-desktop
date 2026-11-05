@@ -24,9 +24,7 @@ use moby_protocol::usb::{
 use moby_protocol::{Expression, PROTOCOL_VERSION, StableId};
 
 use super::pairings::PairingStore;
-use super::view::{
-    DeviceView, PairFailure, PairStep, Phase, RobotError, Snapshot, default_name,
-};
+use super::view::{DeviceView, PairFailure, PairStep, Phase, RobotError, Snapshot, default_name};
 
 /// A desktop frame at least this often keeps the robot's session alive (it drops after ~8 s).
 pub const KEEPALIVE_MS: u64 = 1_000;
@@ -109,11 +107,17 @@ enum Auth {
 enum Pair {
     Idle,
     /// `pair_begin` sent.
-    Starting { since: u64 },
+    Starting {
+        since: u64,
+    },
     /// The robot is waiting for its talk button.
-    WaitButton { deadline: u64 },
+    WaitButton {
+        deadline: u64,
+    },
     /// `pair_set_key` sent.
-    Saving { since: u64 },
+    Saving {
+        since: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,15 +229,6 @@ impl Session {
 
     pub fn established(&self) -> bool {
         self.stage == Stage::Established
-    }
-
-    pub fn device_id(&self) -> Option<&StableId> {
-        self.device.as_ref().map(|device| &device.id)
-    }
-
-    /// True once the robot has said hello and this computer has answered it.
-    pub fn is_pairing(&self) -> bool {
-        self.pair != Pair::Idle
     }
 
     // ---- input -------------------------------------------------------------------------
@@ -519,10 +514,7 @@ impl Session {
 
     pub fn begin_pairing(&mut self, now: u64) -> Result<(), UserError> {
         if self.stage != Stage::Established {
-            return Err(UserError::new(
-                "not_connected",
-                "Connect to Moby first.",
-            ));
+            return Err(UserError::new("not_connected", "Connect to Moby first."));
         }
         if self.pair != Pair::Idle {
             return Err(UserError::new("busy", "Pairing is already running."));
@@ -774,9 +766,7 @@ fn pairing_failure_text(code: &str) -> &'static str {
         }
         "random" => "This computer could not make a secure key, so Moby was left unchanged.",
         "interrupted" => "The connection to Moby restarted, so pairing stopped. Try again.",
-        "unconfirmed" => {
-            "Moby did not confirm the key. If it still asks to be paired, try again."
-        }
+        "unconfirmed" => "Moby did not confirm the key. If it still asks to be paired, try again.",
         _ => "Moby refused to pair. Try again.",
     }
 }

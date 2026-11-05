@@ -147,11 +147,6 @@ impl SimRobot {
         self
     }
 
-    pub fn with_capabilities(mut self, capabilities: &[&'static str]) -> Self {
-        self.capabilities = capabilities.to_vec();
-        self
-    }
-
     /// Everything the robot has written so far, as a test would read it from the port.
     pub fn take_output(&mut self) -> Vec<u8> {
         self.out.drain(..).collect()
@@ -268,10 +263,6 @@ impl SimRobot {
 
     pub fn plug(&mut self) {
         self.unplugged = false;
-    }
-
-    pub fn is_unplugged(&self) -> bool {
-        self.unplugged
     }
 
     /// Damages the next `count` frames the robot sends.
@@ -479,7 +470,9 @@ impl SimRobot {
             return;
         }
         let value = match error {
-            None => json!({"v":1,"kind":"response","name":"command_ok","id":id,"ts_ms":self.ts(),"data":{}}),
+            None => {
+                json!({"v":1,"kind":"response","name":"command_ok","id":id,"ts_ms":self.ts(),"data":{}})
+            }
             Some((code, detail)) => json!({
                 "v":1,"kind":"response","name":"command_error","id":id,"ts_ms":self.ts(),
                 "data":{"code":code,"detail":detail}
@@ -643,7 +636,10 @@ impl SimRobot {
         self.face = Expression::Idle;
         self.state = State::Idle;
         self.stats.sessions_started += 1;
-        self.event("mute_changed", json!({"muted": self.muted, "source": "boot"}));
+        self.event(
+            "mute_changed",
+            json!({"muted": self.muted, "source": "boot"}),
+        );
         if !proven {
             self.raise_error("E_STATE", "authentication failed");
         }
@@ -702,7 +698,9 @@ impl SimRobot {
                 self.respond(&id, Some(("E_STATE", "no such stream")));
             }
             ControlMessage::SetConfig { .. } => self.respond(&id, None),
-            ControlMessage::PairBegin { data, .. } => self.on_pair_begin(&id, data.timeout_ms.get()),
+            ControlMessage::PairBegin { data, .. } => {
+                self.on_pair_begin(&id, data.timeout_ms.get())
+            }
             ControlMessage::PairSetKey { data, .. } => self.on_pair_set_key(&id, &data.pair_key),
             _ => self.respond(&id, Some(("E_UNSUPPORTED", "unsupported command"))),
         }
@@ -724,8 +722,8 @@ impl SimRobot {
             self.error_until = None;
             self.face = target;
             let duration = u64::from(data.duration_ms.get());
-            self.expression_until = (duration != 0 && target != Expression::Idle)
-                .then_some(self.now + duration);
+            self.expression_until =
+                (duration != 0 && target != Expression::Idle).then_some(self.now + duration);
             self.state = match target {
                 Expression::Listening => State::Listening,
                 Expression::Thinking => State::Thinking,
@@ -874,7 +872,11 @@ pub struct CombinedConnector {
 impl Connector for CombinedConnector {
     fn ports(&mut self) -> Vec<PortInfo> {
         let mut ports = self.real.ports();
-        if *self.sim_enabled.lock().unwrap_or_else(PoisonError::into_inner) {
+        if *self
+            .sim_enabled
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+        {
             ports.extend(self.sim.ports());
         }
         ports
@@ -882,7 +884,11 @@ impl Connector for CombinedConnector {
 
     fn open(&mut self, name: &str) -> Result<Box<dyn Transport>, OpenError> {
         if name == self.sim.port {
-            if !*self.sim_enabled.lock().unwrap_or_else(PoisonError::into_inner) {
+            if !*self
+                .sim_enabled
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+            {
                 return Err(OpenError::NotFound);
             }
             self.sim.open(name)

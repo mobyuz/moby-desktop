@@ -19,7 +19,7 @@
 //! Audio is not here: it is stage D4, and nothing in this module starts a microphone.
 
 mod clock;
-mod commands;
+pub(crate) mod commands;
 mod link;
 mod pairings;
 mod service;
@@ -32,15 +32,15 @@ mod tests;
 mod transport;
 mod view;
 
-pub use commands::{
-    robot_begin_pairing, robot_cancel_pairing, robot_connect, robot_devices, robot_disconnect,
-    robot_dev, robot_ports, robot_subscribe, robot_unpair,
-};
 pub use service::Robot;
 
 /// Whether the simulator is part of this build. Release builds say no, and the check below makes
 /// that a compile-time fact rather than a convention.
+#[allow(dead_code)]
 pub const SIMULATOR_COMPILED: bool = cfg!(any(test, debug_assertions));
 
 #[cfg(not(any(test, debug_assertions)))]
-const _: () = assert!(!SIMULATOR_COMPILED, "the simulator must not be in a release build");
+const _: () = assert!(
+    !SIMULATOR_COMPILED,
+    "the simulator must not be in a release build"
+);

@@ -132,13 +132,25 @@ impl Rig {
             text.push_str(&format!("{snapshot:?}"));
         }
         text.push_str(&serde_json::to_string(&self.snap()).unwrap());
-        text.push_str(&self.logs.lock().unwrap_or_else(PoisonError::into_inner).join("\n"));
+        text.push_str(
+            &self
+                .logs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .join("\n"),
+        );
         text.push_str(&format!("{:?}", self.pairings));
         text
     }
 
     fn received_names(&self) -> Vec<String> {
-        self.sim(|robot| robot.received.iter().map(|(_, name)| name.clone()).collect())
+        self.sim(|robot| {
+            robot
+                .received
+                .iter()
+                .map(|(_, name)| name.clone())
+                .collect()
+        })
     }
 }
 
@@ -183,7 +195,10 @@ fn an_unpaired_robot_is_found_acknowledged_and_shown_as_unpaired() {
     assert!(!device.paired_here && !device.paired_on_robot);
     assert!(!device.audio);
     assert!(rig.sim(|robot| robot.is_established()));
-    assert_eq!(rig.received_names().first().map(String::as_str), Some("hello_ack"));
+    assert_eq!(
+        rig.received_names().first().map(String::as_str),
+        Some("hello_ack")
+    );
 }
 
 #[test]
@@ -217,7 +232,11 @@ fn a_paired_robot_without_a_key_here_is_shown_as_paired_elsewhere() {
     rig.run(1_500);
     let snap = rig.snap();
     assert_eq!(snap.phase, Phase::ForeignPaired);
-    assert!(snap.message.unwrap().contains("hold its talk button for 10 seconds"));
+    assert!(
+        snap.message
+            .unwrap()
+            .contains("hold its talk button for 10 seconds")
+    );
     assert!(snap.device.unwrap().paired_on_robot);
 }
 
@@ -241,7 +260,10 @@ fn a_robot_on_another_protocol_version_gets_a_clear_message_and_is_refused() {
     let snap = rig.snap();
     assert_eq!(snap.phase, Phase::Incompatible);
     let message = snap.message.unwrap();
-    assert!(message.contains("version 2") && message.contains("version 1"), "{message}");
+    assert!(
+        message.contains("version 2") && message.contains("version 1"),
+        "{message}"
+    );
     assert!(!rig.sim(|robot| robot.is_established()));
     // It is refused, not abandoned: the link stays so the message stays.
     assert_eq!(rig.snap().phase, Phase::Incompatible);
@@ -286,10 +308,18 @@ fn the_desktop_sends_a_frame_at_least_every_two_seconds_and_the_robot_never_drop
         let times: Vec<u64> = robot.received.iter().map(|(at, _)| *at).collect();
         assert!(times.len() > 25, "only {} frames", times.len());
         for pair in times.windows(2) {
-            assert!(pair[1] - pair[0] <= 2_000, "gap of {} ms", pair[1] - pair[0]);
+            assert!(
+                pair[1] - pair[0] <= 2_000,
+                "gap of {} ms",
+                pair[1] - pair[0]
+            );
         }
         // With nothing else to say, the frame is an empty set_config.
-        let names: Vec<&str> = robot.received.iter().map(|(_, name)| name.as_str()).collect();
+        let names: Vec<&str> = robot
+            .received
+            .iter()
+            .map(|(_, name)| name.as_str())
+            .collect();
         assert!(names[1..].iter().all(|name| *name == "set_config"));
     });
     // The replies to those keepalives are ignored: nothing unexpected was counted.
@@ -340,7 +370,10 @@ fn lost_heartbeats_end_the_link_and_it_reconnects_with_a_short_first_wait() {
         waited += 10;
     }
     assert_eq!(rig.snap().phase, Phase::Reconnecting);
-    assert!(waited >= HEARTBEAT_LOSS_MS - 500 && waited <= HEARTBEAT_LOSS_MS + 2_500, "{waited}");
+    assert!(
+        waited >= HEARTBEAT_LOSS_MS - 500 && waited <= HEARTBEAT_LOSS_MS + 2_500,
+        "{waited}"
+    );
     assert_eq!(rig.snap().retry_in_ms, Some(500));
     assert!(rig.snap().message.unwrap().contains("stopped answering"));
     rig.sim(|robot| robot.set_silent(false));
@@ -386,7 +419,10 @@ fn a_device_that_never_says_hello_is_dropped_and_retried() {
     let pairings: Arc<dyn PairingStore> = Arc::new(MemoryPairings::default());
     let mut session = Session::new(pairings, Box::new(SeqRandom(0)), 1_000);
     assert_eq!(session.tick(1_000 + HELLO_WAIT_MS), None);
-    assert_eq!(session.tick(1_001 + HELLO_WAIT_MS), Some(DropReason::NoHello));
+    assert_eq!(
+        session.tick(1_001 + HELLO_WAIT_MS),
+        Some(DropReason::NoHello)
+    );
     rig.run(100);
 }
 
@@ -415,7 +451,11 @@ fn a_corrupted_frame_is_counted_and_the_link_carries_on() {
     rig.run(5_000);
     let snap = rig.snap();
     assert_eq!(snap.phase, Phase::Unpaired);
-    assert!(snap.stats.bad_crc + snap.stats.bad_frame >= 1, "{:?}", snap.stats);
+    assert!(
+        snap.stats.bad_crc + snap.stats.bad_frame >= 1,
+        "{:?}",
+        snap.stats
+    );
     assert!(snap.stats.frames_ok >= 2);
 }
 
@@ -487,7 +527,11 @@ fn robot_audio_is_ignored_and_counted_and_never_answered() {
     assert_eq!(stats.audio_frames_ignored, 1);
     assert_eq!(stats.audio_events_ignored, 1);
     // The desktop starts nothing and replies with nothing but keepalives.
-    assert!(rig.received_names()[1..].iter().all(|name| name == "set_config"));
+    assert!(
+        rig.received_names()[1..]
+            .iter()
+            .all(|name| name == "set_config")
+    );
 }
 
 // ---- mute ----------------------------------------------------------------------------------
@@ -530,12 +574,22 @@ fn robot_states_and_errors_are_reflected() {
     rig.run(2_500);
     assert_eq!(rig.snap().expression, Expression::Listening);
     // An error event from the robot is shown for a few seconds.
-    rig.sim(|robot| robot.inject_payload(
-        &serde_json::to_vec(&event_json("e-7", "error", json!({"code":"E_HW","detail":"mic fault"}))).unwrap(),
-    ));
+    rig.sim(|robot| {
+        robot.inject_payload(
+            &serde_json::to_vec(&event_json(
+                "e-7",
+                "error",
+                json!({"code":"E_HW","detail":"mic fault"}),
+            ))
+            .unwrap(),
+        )
+    });
     rig.run(300);
     let error = rig.snap().error.expect("error");
-    assert_eq!((error.code.as_str(), error.detail.as_str()), ("E_HW", "mic fault"));
+    assert_eq!(
+        (error.code.as_str(), error.detail.as_str()),
+        ("E_HW", "mic fault")
+    );
     rig.run(6_000);
     assert_eq!(rig.snap().error, None);
 }
@@ -604,10 +658,16 @@ fn pairing_an_already_paired_robot_is_refused_by_the_robot_and_explained() {
     rig.sup.command(Command::BeginPairing).unwrap();
     rig.run(300);
     let snap = rig.snap();
-    assert_eq!(snap.pair_failure.as_ref().map(|f| f.code), Some("already_paired"));
+    assert_eq!(
+        snap.pair_failure.as_ref().map(|f| f.code),
+        Some("already_paired")
+    );
     assert!(snap.pair_failure.unwrap().message.contains("reset"));
     assert!(!rig.pairings.has_key(DEVICE));
-    assert_eq!(rig.sim(|robot| robot.key_text()), Some(key(7).as_str().to_owned()));
+    assert_eq!(
+        rig.sim(|robot| robot.key_text()),
+        Some(key(7).as_str().to_owned())
+    );
 }
 
 #[test]
@@ -616,7 +676,10 @@ fn a_second_begin_while_waiting_is_refused_here() {
     rig.connect();
     rig.run(300);
     rig.sup.command(Command::BeginPairing).unwrap();
-    assert_eq!(rig.sup.command(Command::BeginPairing).unwrap_err().code, "busy");
+    assert_eq!(
+        rig.sup.command(Command::BeginPairing).unwrap_err().code,
+        "busy"
+    );
 }
 
 #[test]
@@ -632,7 +695,11 @@ fn a_cancelled_pairing_ignores_a_late_button_press() {
     // The robot's confirmation arrived with no pairing running: wrong order, so no key is made.
     assert_eq!(rig.snap().stats.unexpected_messages, 1);
     assert!(!rig.pairings.has_key(DEVICE));
-    assert!(!rig.received_names().iter().any(|name| name == "pair_set_key"));
+    assert!(
+        !rig.received_names()
+            .iter()
+            .any(|name| name == "pair_set_key")
+    );
     assert_eq!(rig.snap().phase, Phase::Unpaired);
 }
 
@@ -664,7 +731,11 @@ fn if_the_key_cannot_be_saved_nothing_is_sent_to_the_robot() {
     rig.run(500);
     let snap = rig.snap();
     assert_eq!(snap.pair_failure.as_ref().map(|f| f.code), Some("storage"));
-    assert!(!rig.received_names().iter().any(|name| name == "pair_set_key"));
+    assert!(
+        !rig.received_names()
+            .iter()
+            .any(|name| name == "pair_set_key")
+    );
     assert!(!rig.sim(|robot| robot.is_paired()));
 }
 
@@ -680,17 +751,26 @@ fn a_refused_key_is_taken_back_out_of_the_store() {
     session.take_outgoing(1_000);
     session.begin_pairing(1_100).unwrap();
     let begin = session.take_outgoing(1_100).remove(0);
-    session.on_message(1_150, &robot_message(json!({
-        "v":1,"kind":"response","name":"command_ok","id":begin.id().as_str(),"ts_ms":2,"data":{}
-    })));
-    session.on_message(1_200, &robot_message(event_json("e-2", "pair_button_confirmed", json!({}))));
+    session.on_message(
+        1_150,
+        &robot_message(json!({
+            "v":1,"kind":"response","name":"command_ok","id":begin.id().as_str(),"ts_ms":2,"data":{}
+        })),
+    );
+    session.on_message(
+        1_200,
+        &robot_message(event_json("e-2", "pair_button_confirmed", json!({}))),
+    );
     assert!(pairings.has_key(DEVICE));
     let set_key = session.take_outgoing(1_200).remove(0);
     assert_eq!(set_key.name(), "pair_set_key");
-    session.on_message(1_250, &robot_message(json!({
-        "v":1,"kind":"response","name":"command_error","id":set_key.id().as_str(),"ts_ms":3,
-        "data":{"code":"E_STATE","detail":"pairing was not confirmed"}
-    })));
+    session.on_message(
+        1_250,
+        &robot_message(json!({
+            "v":1,"kind":"response","name":"command_error","id":set_key.id().as_str(),"ts_ms":3,
+            "data":{"code":"E_STATE","detail":"pairing was not confirmed"}
+        })),
+    );
     assert!(!pairings.has_key(DEVICE) && !pairings.has_record(DEVICE));
     let snap = session.snapshot();
     assert_eq!(snap.pair_failure.map(|f| f.code), Some("not_confirmed"));
@@ -707,7 +787,10 @@ fn a_button_confirmation_nobody_asked_for_makes_no_key() {
     );
     session.on_message(1_000, &robot_message(hello_json("e-1", false, 1)));
     session.take_outgoing(1_000);
-    session.on_message(1_100, &robot_message(event_json("e-2", "pair_button_confirmed", json!({}))));
+    session.on_message(
+        1_100,
+        &robot_message(event_json("e-2", "pair_button_confirmed", json!({}))),
+    );
     assert!(session.take_outgoing(1_100).is_empty());
     assert!(!pairings.has_key(DEVICE));
     assert_eq!(session.unexpected, 1);
@@ -721,9 +804,19 @@ fn a_robot_that_never_answers_pair_begin_ends_the_attempt() {
     session.take_outgoing(1_000);
     session.begin_pairing(1_100).unwrap();
     session.take_outgoing(1_100);
-    session.on_message(1_200, &robot_message(event_json("e-2", "heartbeat", json!({"state":"idle","mute":false,"uptime_ms":1}))));
+    session.on_message(
+        1_200,
+        &robot_message(event_json(
+            "e-2",
+            "heartbeat",
+            json!({"state":"idle","mute":false,"uptime_ms":1}),
+        )),
+    );
     assert_eq!(session.tick(1_200 + 3_000), None);
-    assert_eq!(session.snapshot().pair_failure.map(|f| f.code), Some("no_answer"));
+    assert_eq!(
+        session.snapshot().pair_failure.map(|f| f.code),
+        Some("no_answer")
+    );
 }
 
 #[test]
@@ -734,18 +827,31 @@ fn the_pairing_window_has_its_own_deadline_if_the_robot_never_reports_a_timeout(
     session.take_outgoing(1_000);
     session.begin_pairing(1_000).unwrap();
     let begin = session.take_outgoing(1_000).remove(0);
-    session.on_message(1_010, &robot_message(json!({
-        "v":1,"kind":"response","name":"command_ok","id":begin.id().as_str(),"ts_ms":2,"data":{}
-    })));
+    session.on_message(
+        1_010,
+        &robot_message(json!({
+            "v":1,"kind":"response","name":"command_ok","id":begin.id().as_str(),"ts_ms":2,"data":{}
+        })),
+    );
     let keep_alive = |session: &mut Session, at: u64| {
-        session.on_message(at, &robot_message(event_json("e-3", "heartbeat", json!({"state":"idle","mute":false,"uptime_ms":1}))));
+        session.on_message(
+            at,
+            &robot_message(event_json(
+                "e-3",
+                "heartbeat",
+                json!({"state":"idle","mute":false,"uptime_ms":1}),
+            )),
+        );
     };
     keep_alive(&mut session, 20_000);
     session.tick(20_000);
     assert_eq!(session.snapshot().pair_step, Some(PairStep::PressButton));
     keep_alive(&mut session, 33_900);
     session.tick(33_900);
-    assert_eq!(session.snapshot().pair_failure.map(|f| f.code), Some("timeout"));
+    assert_eq!(
+        session.snapshot().pair_failure.map(|f| f.code),
+        Some("timeout")
+    );
 }
 
 #[test]
@@ -773,7 +879,10 @@ fn unpairing_removes_the_key_and_the_record_and_the_robot_is_then_foreign() {
     assert!(!rig.pairings.has_key(DEVICE) && !rig.pairings.has_record(DEVICE));
     assert_eq!(rig.snap().phase, Phase::ForeignPaired);
     assert_eq!(
-        rig.sup.command(Command::Unpair("Not An Id".into())).unwrap_err().code,
+        rig.sup
+            .command(Command::Unpair("Not An Id".into()))
+            .unwrap_err()
+            .code,
         "invalid_input"
     );
 }
@@ -834,7 +943,10 @@ fn the_protocol_frame_vectors_decode_the_same_way_in_the_desktop_link_layer() {
         let mut framer = Framer::new();
         let messages = framer.push(&hex(wire));
         let stats = framer.stats.clone();
-        assert!(messages.is_empty(), "{name}: no vector here is a robot control message");
+        assert!(
+            messages.is_empty(),
+            "{name}: no vector here is a robot control message"
+        );
         match (result, kind) {
             ("ok", "2") => assert_eq!(stats.audio_frames_ignored, 1, "{name}"),
             // Desktop audio never comes from a robot.
@@ -898,7 +1010,11 @@ fn every_message_the_desktop_builds_is_a_valid_desktop_frame() {
     rig.run(3_000);
     rig.sim(|robot| {
         assert_eq!(robot.stats.bad_frames_seen, 0);
-        let names: Vec<&str> = robot.received.iter().map(|(_, name)| name.as_str()).collect();
+        let names: Vec<&str> = robot
+            .received
+            .iter()
+            .map(|(_, name)| name.as_str())
+            .collect();
         assert!(names.contains(&"pair_begin") && names.contains(&"pair_set_key"));
     });
     let mut wire = vec![0; MAX_WIRE_LEN];

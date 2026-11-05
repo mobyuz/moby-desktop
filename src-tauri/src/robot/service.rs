@@ -24,7 +24,10 @@ pub(super) enum Msg {
     Command(Command, oneshot::Sender<Result<(), UserError>>),
     Ports(oneshot::Sender<Vec<PortInfo>>),
     #[cfg(debug_assertions)]
-    Dev(super::commands::DevAction, oneshot::Sender<Result<(), UserError>>),
+    Dev(
+        super::commands::DevAction,
+        oneshot::Sender<Result<(), UserError>>,
+    ),
 }
 
 /// Handle to the robot link. Managed as Tauri state.
