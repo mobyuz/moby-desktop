@@ -178,6 +178,7 @@ cargo run --locked        # leave it running; it listens on 127.0.0.1:8080
 $env:MOBY_E2E_API_URL = 'http://127.0.0.1:8080'
 $env:MOBY_E2E_MAIL_URL = 'http://127.0.0.1:8025'   # optional; this is the default
 Set-Location src-tauri
+cargo build --example test_helper   # the harmless program the denied-launch check registers
 cargo test --locked --lib real_api_end_to_end -- --ignored --nocapture
 
 # afterwards
